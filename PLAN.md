@@ -26,11 +26,17 @@ scripts/10-snapshot.sh
 scripts/20-backup.sh
 ```
 *Expect in `backup/`: `boot-stock.bin` (67108864 bytes), `part-{sbl1,rpm,tz,hyp,aboot,modemst1,modemst2,fsg,fsc,…}.bin`
-with each line printing `want N got N bytes`, `lib-firmware.tar.zst`, `kernel-boot.tar.zst`,
+each printing `want N got N bytes` + `md5 verified`, `lib-firmware.tar.zst`, `kernel-boot.tar.zst`,
 `usr-bin-adbd`, `MANIFEST.sha256`, and finally a decoded boot header
-(`cmdline earlycon root=PARTUUID=… console=ttyMSM0,115200 …`).*
+(`cmdline earlycon root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e console=ttyMSM0,115200 …`).*
 
-- Any `size mismatch - do not trust this copy` → stop, re-run that partition.
+Measured on this stick, so the timing is not a surprise: `adb exec-out` is broken on this
+`adbd` (`error: closed`), so every binary is written to `/var/tmp/openstick-stage.*` on the
+stick, pulled with `adb pull`, and compared by md5 (device-side `dd` runs at ~60 MB/s; the
+pull over adb is the slow part). The step-by-step file-level rootfs archive is the long one —
+about ten minutes. There is no `/data/local/tmp` here: that path is Android, not Debian.
+
+- Any `size mismatch` / `md5 mismatch` / `did not back up` line → stop, re-run that partition.
 - `usr-bin-gc … absent` is fine only if you plan to use the configfs fallback unit.
 - `boot` is the one you must never lose: it is the only copy of a working kernel+DTB for this board.
 

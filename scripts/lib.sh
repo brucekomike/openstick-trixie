@@ -32,13 +32,19 @@ if [ -n "${ADB_SERIAL:-}" ]; then ADB_BIN+=(-s "$ADB_SERIAL"); fi
 
 EXECOUT_OK=""
 exec_out_supported() {
+  # dev() is called from $(...) subshells, so a shell variable cannot cache this across
+  # calls - the file does, and without it every single device command would warn.
+  local mark="$OUT/.execout-probe"
+  if [ -z "$EXECOUT_OK" ] && [ -f "$mark" ]; then EXECOUT_OK=$(cat "$mark"); fi
   if [ -z "$EXECOUT_OK" ]; then
+    mkdir -p "$OUT"
     if timeout 20 "${ADB_BIN[@]}" exec-out "printf OS_OK" 2>/dev/null | grep -q OS_OK; then
       EXECOUT_OK=1
     else
       EXECOUT_OK=0
       warn "this adbd has no working exec-out; falling back to 'adb shell' for text"
     fi
+    echo "$EXECOUT_OK" > "$mark"
   fi
   [ "$EXECOUT_OK" = 1 ]
 }
@@ -53,18 +59,46 @@ dev() {
   fi
 }
 
-# dev_write <device-command> <device-temp-path> - run a command whose stdout is a file
-# on the stick (dd, tar, ...). Returns non-zero if the command failed.
+# Where binaries are staged on the stick before `adb pull`. NOT /data/local/tmp - that is
+# an Android convention and does not exist on this Debian rootfs. /var/tmp is on the
+# rootfs itself (2.2 GB free); /tmp is a tmpfs bounded by the 461 MB of RAM.
+STAGE_DIR=/var/tmp/openstick-stage
+
+# dev_write <device-command> <name> - run a command whose stdout becomes a staged file.
+# adb shell does not propagate exit codes, so the success marker and the size are read
+# back from the device instead of trusting the return status. Prints the staged size.
 dev_write() {
-  local cmd="$1" tmp="$2"
-  timeout 1800 "${ADB_BIN[@]}" shell "sh -c '$cmd > $tmp'" >/dev/null 2>&1
+  local cmd="$1" name="$2" res tmp
+  # Separate statement: bash expands every word of a `local` command before assigning any
+  # of them, so `local name=$2 tmp=...$name` under `set -u` reads an unset `name`.
+  tmp="$STAGE_DIR.$name"
+  # Not dev(): dev caps at 60s, and a device-side rootfs tar takes minutes.
+  res=$(timeout 3600 "${ADB_BIN[@]}" shell \
+        "sh -c '$cmd' > $tmp && echo STAGED \$(stat -c %s $tmp) || { rm -f $tmp; echo STAGE_FAILED; }" \
+        2>/dev/null | tr -d '\r')
+  case "$res" in
+    *STAGE_FAILED*) warn "device-side write failed for $name"; return 1 ;;
+    *STAGED*) res="${res##*STAGED }"; echo "$res" | awk '{print $1}'; return 0 ;;
+    *) warn "no staging marker for $name ($res)"; return 1 ;;
+  esac
 }
 
-# pull <device-temp-path> <host-path> - binary-safe copy, then remove the temp.
+# pull <name> <host-path> - binary-safe copy of a staged file, md5-verified, temp removed.
+# The md5 comparison is what proves the transfer was not mangled: adb's PTY rewrites bytes
+# and some adbd builds truncate, so a size match alone is not enough.
 pull() {
-  local tmp="$1" host="$2"
-  "${ADB_BIN[@]}" pull "$tmp" "$host" >/dev/null 2>&1 || return 1
-  timeout 30 "${ADB_BIN[@]}" shell "rm -f $tmp" >/dev/null 2>&1 || true
+  local name="$1" host="$2" tmp dmd5 hmd5
+  tmp="$STAGE_DIR.$name"
+  dmd5=$(dev "md5sum $tmp" | awk '{print $1}')
+  "${ADB_BIN[@]}" pull "$tmp" "$host" >/dev/null 2>&1 || { warn "adb pull failed for $name"; return 1; }
+  hmd5=$(md5sum "$host" | awk '{print $1}')
+  if [ -n "$dmd5" ] && [ "$dmd5" != "$hmd5" ]; then
+    warn "md5 mismatch pulling $name (device $dmd5 != host $hmd5) - copy is corrupt"
+    return 1
+  fi
+  dev "rm -f $tmp" >/dev/null
+  [ -z "$dmd5" ] && echo "  (no device md5 for $name - size-only check)" || echo "  md5 verified"
+  return 0
 }
 
 require_device() {

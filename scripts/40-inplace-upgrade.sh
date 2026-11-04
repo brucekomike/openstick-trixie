@@ -71,8 +71,15 @@ note "adbd / gc" "$ADBD_OK / $GC_OK"
 echo "  adbd and gc are NOT dpkg-owned here, which is why adb is reported lost after a"
 echo "  distro upgrade: the Mobian gadget script calls 'gc' and nothing provides it."
 
-SSH_OK=$(dev "systemctl is-active ssh" | tr -d '\r')
-note "ssh daemon" "$SSH_OK (keep this as the second door if adb breaks)"
+SSH_STATE=$(dev "echo -n \"svc=\$(systemctl is-active ssh) sock=\$(systemctl is-active ssh.socket) port22=\$(ss -ltn 2>/dev/null | grep -c ':22 ')\"" | tr -d '\r')
+note "ssh (2nd door)" "$SSH_STATE"
+case "$SSH_STATE" in
+  *port22=[1-9]*)
+    echo "  port 22 answers. Note: sshd here is SOCKET-activated, so 'systemctl is-active ssh'"
+    echo "  reads inactive even while the port is served by pid 1 - test the port, not the service." ;;
+  *) warn "port 22 is not listening ($SSH_STATE). Open the second door BEFORE the hop:"
+     warn "  adb -s $ADB_SERIAL shell systemctl enable --now ssh.socket   (and set a root password)" ;;
+esac
 
 [ "$fails" = 0 ] || warn "$fails preflight warning(s) - read them before staging"
 

@@ -57,8 +57,12 @@ Countermeasures in this repo:
 * `config/usb-adb-gadget.sh` + `.service` — configfs-only RNDIS+ADB bring-up, no `gc`, no
   libusbgx; installed by the staging step **disabled** (it and the Mobian unit both own `g1`).
 * `20-backup.sh` copies `adbd`, `gc` and the Mobian script out of the running rootfs.
-* Order of doors if adb disappears: `ssh 10.42.0.1` (sshd is enabled) → serial console
+* Order of doors if adb disappears: `ssh root@10.42.0.1` → serial console
   (`console=ttyMSM0,115200` is on the kernel cmdline) → `systemctl enable --now usb-adb-gadget`.
+  Verified on this stick: ssh is **socket-activated**, so `systemctl is-active ssh` reports
+  `inactive` while `ssh.socket` is active and pid 1 holds `*:22` in LISTEN — probe the port
+  (`ss -ltn | grep ':22 '`, or from the host `/dev/tcp/10.42.0.1/22`), not the service name,
+  or you will conclude the wrong thing and go quiet on a headless board.
 
 ## Scripts
 
@@ -90,19 +94,59 @@ COMMIT=1 scripts/40-inplace-upgrade.sh --to bookworm
 COMMIT=1 scripts/40-inplace-upgrade.sh --to trixie
 ```
 
+## What the backup proved about the boot image
+
+`20-backup.sh` pulled the `boot` partition (67,108,864 bytes, md5-verified against the
+device's own md5) and `tools/bootimg.py unpack` then split it for real:
+
+| part | measured | note |
+|---|---|---|
+| kernel payload | 9,451,356 B gzip → 22,726,664 B | matches `/boot/vmlinuz-5.15.0-jsbsbxjxh66+` |
+| appended DTB | 49,653 B, `out/bootimg/dtb0.dtb` sha256 `2730cc4b…` | strings carry *"Handsome OpenStick jsbsbxjxh66-bianyi UFI103s"* and `handsome,openstick` + `qcom,msm8916` |
+| ramdisk | 6,644,810 B gzip → 15,644,160 B | `mkinitramfs-MAIN_Uzpm4Y`, dated **2022-12-10** |
+| header | `page_size 2048`, `second_size 0`, `dtb_size field 0` | so `repack`'s stage2 guard does not trip on this image |
+| cmdline | `earlycon root=PARTUUID=a7ab80e8-e9d1-e8cd-f157-93f69b1d141e console=ttyMSM0,115200 no_framebuffer=true rw` | identical to `/proc/cmdline` minus the `androidboot.*` tags aboot appends |
+
+Two consequences that matter for the plan:
+
+* The **DTB is now a file**, so route C (`60-build-bootimg.sh repack --dtb out/bootimg/dtb0.dtb`)
+  is a concrete thing rather than a guess — still experimental for the 5.15-FDT-on-6.x-kernel
+  reason stated above, but no longer blocked on "where do we get a DTB".
+* The initrd is a plain Debian `mkinitramfs`, and all it has to do is find
+  `root=PARTUUID=…` and mount ext4. It does not care that the userspace underneath it became
+  trixie, which is exactly why the userspace-only route does not need a new initrd at all.
+
 ## Status of this directory
 
-Verified by running: `00-host-check.sh`, `05-fetch-vendor.sh`, `06-vendor-fixup.sh`,
-`10-snapshot.sh`, `20-backup.sh` (device side read-only), `bootimg.py info/unpack`.
-**Not yet run / unproven:** `50-build-rootfs.sh` (needs binfmt for arm64 containers, which
-this host currently lacks), `60-build-bootimg.sh repack` (needs a newer kernel binary),
-`70-flash.sh` (never executed — fastboot/EDL entry on this stick is still untested, so the
-recovery path is not yet proven), and the apt upgrade itself.
+**Proven by running it** on 2026-11-04:
+* `make test` — 7/7 boot-image round-trip tests pass, every script parses (`bash -n`).
+* `00-host-check.sh`, `05-fetch-vendor.sh` (pin `5724497`), `06-vendor-fixup.sh`,
+  `10-snapshot.sh` (18 files in `notes/`), `20-backup.sh`, `90-restore.sh verify`.
+* `20-backup.sh` end to end: `boot-stock.bin` = 67,108,864 B exactly, every firmware and
+  calibration partition matched its `blockdev` size **and** its device-side md5, `/lib/firmware`
+  (25 MB zst) and `/lib/modules`+`/boot` (20 MB zst) pulled, `adbd` + `gc` confirmed valid
+  aarch64 ELF and the Mobian script confirmed as a shell script, rootfs file-level archive
+  272 MB, device scratch left clean, `MANIFEST.sha256` written, and `bootimg.py info/unpack`
+  decoded the real image.
+* Three bugs that only a real run would show, now fixed: `adb exec-out` unsupported by this
+  adbd, `df -BG` GiB-vs-MB unit confusion in the preflight, and `local name=$2 tmp=…$name`
+  expanding `$name` before it was assigned.
 
-Rollback story, stated honestly: `backup/boot-stock.bin` restores the kernel/boot path, and
-`backup/rootfs-files.tar.zst` is a file-level snapshot of Debian 11. A *clean* rootfs rollback
-needs either fastboot or EDL, and neither has been confirmed reachable on this stick yet —
-test that **before** touching `rootfs`.
+**Not yet run / unproven:**
+* `50-build-rootfs.sh` — needs arm64 binfmt for docker, which this host lacks today
+  (`docker run --platform linux/arm64` gives `exec format error`).
+* `60-build-bootimg.sh repack` — the tool is unit-tested and the stock DTB is extracted, but no
+  newer kernel binary has been fed through it, and a 5.15-era FDT on a 6.x kernel is unverified.
+* `70-flash.sh` — never executed. **fastboot and EDL entry on this stick are still unconfirmed**,
+  so the rootfs rollback path is not yet proven. Test that (PLAN step 6) before flashing anything
+  but `boot`.
+* The apt upgrade itself, and the configfs fallback unit on a live trixie system.
+
+Rollback story, stated honestly: `backup/boot-stock.bin` restores the kernel/boot path and is
+md5-verified; `backup/rootfs-files.tar.zst` is a file-level snapshot of Debian 11 (not a
+partition image). A *clean* rootfs rollback needs either fastboot (`fastboot flash rootfs`,
+sparse-aware) or EDL (`edl w rootfs …`), and neither has been confirmed reachable on this stick
+yet.
 
 `backup/`, `notes/`, `out/`, `vendor/` are gitignored: the dumps contain IMEI-bearing
 partitions and vendor binaries.
