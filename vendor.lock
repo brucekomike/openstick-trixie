@@ -1,0 +1,13 @@
+repo=https://github.com/kinsamanka/OpenStick-Builder
+branch=origin/HEAD->origin/main
+commit=57244976de2dccec5d1c9eb527d3cc2793d580c2
+captured=2026-11-04T07:42:21Z
+kernel=https://pkgs.postmarketos.org/package/v24.06/postmarketos/aarch64/linux-postmarketos-qcom-msm8916
+submodules:
+  src/lk2nd
+  src/qtestsign
+  src/qhypstub
+  src/gt
+  src/libusbgx
+trixie_patch_required=scripts/setup.sh libconfig9 -> libconfig11
+default_board_target=yiming-uz801v3  # NOT this stick: override extlinux/devicetree

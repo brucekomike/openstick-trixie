@@ -82,6 +82,16 @@ Countermeasures in this repo:
 
 `make help` lists the same thing.
 
+## Alternative distro: Alpine
+
+`ALPINE.md` assesses the builder's `alpine` branch (Alpine v3.24 + a postmarketOS v25.12
+overlay, `linux-postmarketos-qcom-msm8916` and `msm-firmware-loader` as **apk packages**,
+OpenRC, and **dropbear over NCM** instead of adb). Conclusion there: Alpine is maintained in
+lockstep with the Debian branch and is the lighter, better-kernel-maintained option, but it is
+the **destructive** route — lk2nd + a rewritten GPT + a non-Android ext2 boot partition — so it
+cannot be attempted the way route A can. Same unresolved DTB problem for `handsome,openstick`,
+which the extracted `out/bootimg/dtb0.dtb` is the asset for.
+
 ## Quickstart
 
 ```sh
