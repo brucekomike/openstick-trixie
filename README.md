@@ -18,6 +18,15 @@ additionally needs `I_WIPE_ROOTFS=yes`.
 | userland | Debian 11 (glibc 2.31, systemd 247) with Mobian config services |
 | radio | `remoteproc a204000` running, `qrtr-ns`, `rmtfs`, ModemManager, wcn36xx over smd-edge. **There is no `modem` partition** — the modem/DSP blobs are `/lib/firmware` files (~46 MB) |
 
+## Second trap: the adb transport itself
+
+Measured: this `adbd` build answers **`adb exec-out` with `error: closed`** — no raw binary
+stream is available, and `adb shell` goes through a PTY that rewrites bytes (`\n` → `\r\n`).
+So a `dd ... | ssh-style pipe` backup would have been silently corrupt, and it is the reason
+`20-backup.sh` stages every binary on the stick (`/data/local/tmp`) and moves it with
+`adb pull`. `scripts/lib.sh` probes exec-out once per run and falls back to `adb shell` for
+text only.
+
 ## Why the route is "userspace only"
 
 Two hard constraints, both measured:

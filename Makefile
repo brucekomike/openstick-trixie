@@ -1,9 +1,15 @@
 SHELL := /bin/bash
 SC := scripts
 
-.PHONY: help check vendor fixup snapshot backup backup-full net plan upgrade-check rootfs bootimg-info flash-boot restore-verify
+.PHONY: help check vendor fixup snapshot backup backup-full net plan upgrade-check rootfs bootimg-info flash-boot restore-verify test
+
+test:
+	python3 -m unittest discover -s tests -v
+	@for f in scripts/*.sh config/usb-adb-gadget.sh; do bash -n "$$f" || exit 1; done
+	@echo "all scripts parse"
 
 help:
+	@echo "make test           boot.img round-trip tests + shell syntax check"
 	@echo "make check          host prerequisites (read-only)"
 	@echo "make vendor         clone + pin kinsamanka/OpenStick-Builder into vendor/"
 	@echo "make fixup          apply trixie/board deltas to the vendored builder"

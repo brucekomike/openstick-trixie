@@ -44,10 +44,13 @@ log "preflight"
 fails=0
 note() { printf '  %-26s %s\n' "$1" "$2"; }
 
-read -r FREE_TOTAL AVAIL <<<"$(dev "df -BG --output=size,avail / | tail -1" | tr -d '\r' | tr -s ' ')"
-AVAILNUM=${AVAIL%G}
-note "rootfs free" "$AVAIL (needs >= 1.5G during full-upgrade)"
-[ "${AVAILNUM:-0}" -ge 1500 ] || { warn "only $AVAIL free - purge /var/cache/apt/archives and old logs first"; fails=$((fails+1)); }
+AVAILNUM=$(dev_avail_mb)
+FREE_TOTAL=$(dev "df -P --block-size=1M / | awk 'NR==2{print \$2}'" | tr -dc '0-9')
+note "rootfs free" "${AVAILNUM} MB of ${FREE_TOTAL} MB (needs >= 1500 MB during full-upgrade)"
+if [ "${AVAILNUM:-0}" -lt 1500 ]; then
+  warn "only ${AVAILNUM} MB free - purge /var/cache/apt/archives and old logs first"
+  fails=$((fails+1))
+fi
 
 SWAP=$(dev "free -m | awk '/Swap:/{print \$2}'" | tr -d '\r')
 note "swap total" "${SWAP} MB (zram0 only - 461 MB RAM cannot unpack a full distro on zram alone)"
