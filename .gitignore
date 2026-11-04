@@ -9,3 +9,5 @@
 *.tar.zst
 *.tmp
 MANIFEST.sha256
+__pycache__/
+*.pyc
