@@ -81,6 +81,28 @@ you decide to reflash anyway — its two genuine advantages here are a kernel th
 the tree that maintains these DTs, and an ssh/NCM admin path that never depends on the un-packaged
 `adbd`/`gc` pair that makes adb vanish on Debian.
 
+### Update after reading the backed-up bootloaders and openstick.de
+
+The table above framed Alpine as "replaces the boot chain". That framing was wrong for this
+device, in two ways:
+
+* `part-aboot.bin` contains lk2nd (`lk2nd_skip`, `/mnt/lk2nd_rproc_mode`, `app/aboot/fastboot.c`)
+  and `part-hyp.bin` contains `qhypstub` — the bootloader work `build_hyp_aboot.sh` does is
+  **already done on this stick**.
+* https://www.openstick.de/referenz-en.html describes the platform's bootloader as
+  "lk2nd / lk1st (modified, supports an `extlinux.conf` similar to u-boot); fastboot stays
+  usable", and its kernel as `msm8916-mainline` with "many images ship prebuilt postmarketOS
+  kernels (6.6+)", listing Debian (Bullseye/Bookworm), **Alpine**, postmarketOS and OpenWrt
+  (HandsomeMod) as the operating systems in use. It also states "OpenStick v1" = the original
+  **Debian Bullseye images by HandsomeYingyan** — which is precisely this board's `compatible =
+  "handsome,openstick"` and localversion `jsbsbxjxh66`.
+
+Consequence: the only genuinely destructive step left in the Alpine flow is `extract_fw.sh`'s GPT
+rewrite — and this stick's layout (its root PARTUUID equals the one committed in the builder's own
+`extlinux.conf`) suggests that tooling already ran once here. A newer kernel therefore needs only a
+`boot` + `rootfs` flash, and `scripts/66-make-extlinux-boot.sh` already produces a `boot` image that
+keeps **this board's own DTB** rather than borrowing `thwc-ufi001c`.
+
 ## If you choose it, in order
 
 ```sh

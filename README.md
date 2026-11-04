@@ -13,7 +13,7 @@ additionally needs `I_WIPE_ROOTFS=yes`.
 | CPU | 4× Cortex-A53 (0xd03), ARMv8.0, aarch64, 4 KB pages, `CONFIG_COMPAT=y` |
 | RAM | **461 MB** total, 387 MB available, zram0 230 MB swap |
 | storage | 3.64 GiB eMMC `H4G2a`; GPT: `sbl1 rpm tz hyp sec cdt modemst1 modemst2 boot(64M) rootfs(3.3G) fsc devinfo aboot(1M) fsg` |
-| boot chain | LK/**aboot**, **no UEFI**; `boot` = Android header **v0**, page_size 2048, kernel 9,501,009 B **with appended DTB**, ramdisk 6,644,810 B, cmdline `earlycon root=PARTUUID=… console=ttyMSM0,115200 no_framebuffer=true rw` |
+| boot chain | **lk2nd + qhypstub** (proved by `lk2nd_skip`/`/mnt/lk2nd_rproc_mode` in `part-aboot.bin` and `qhypstub` in `part-hyp.bin`), **no UEFI**; `boot` currently = Android header **v0**, page_size 2048, kernel 9,501,009 B **with appended DTB**, ramdisk 6,644,810 B. lk2nd also accepts `extlinux.conf`, so a newer kernel needs only a `boot` swap — no GPT rewrite |
 | kernel | `5.15.0-jsbsbxjxh66+`, packaged as `…-10.00.Custom` — **exists in no repository** |
 | userland | Debian 11 (glibc 2.31, systemd 247) with Mobian config services |
 | radio | `remoteproc a204000` running, `qrtr-ns`, `rmtfs`, ModemManager, wcn36xx over smd-edge. **There is no `modem` partition** — the modem/DSP blobs are `/lib/firmware` files (~46 MB) |
@@ -77,6 +77,7 @@ Countermeasures in this repo:
 | `scripts/40-inplace-upgrade.sh` | **route A**: preflight, then stage bookworm/trixie with the kernel held and the fallback unit installed |
 | `scripts/50-build-rootfs.sh` | **route B**: docker/debootstrap trixie rootfs + firmware + 5.15 modules + gadget unit → `out/rootfs-trixie.img` |
 | `scripts/60-build-bootimg.sh` | `info`/`unpack`/`repack` the Android boot image (`tools/bootimg.py`, stdlib only) |
+| `scripts/66-make-extlinux-boot.sh` | build the 64 MiB ext2 `boot` image lk2nd reads, packing **this board's own DTB** (`DTS-DIFF-ufi001c.md` explains why not `thwc-ufi001c`) |
 | `scripts/70-flash.sh` | the only partition writer; dry-run by default; refuses calibration labels |
 | `scripts/90-restore.sh` | `verify` / restore `boot` / guarded rootfs paths |
 

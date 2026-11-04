@@ -32,4 +32,5 @@ net:          ; $(SC)/30-net-up.sh
 upgrade-check:; $(SC)/40-inplace-upgrade.sh
 rootfs:       ; $(SC)/50-build-rootfs.sh
 bootimg-info: ; $(SC)/60-build-bootimg.sh info
+extlinux:     ; $(SC)/66-make-extlinux-boot.sh
 restore-verify:; $(SC)/90-restore.sh verify
