@@ -22,8 +22,18 @@ adb_cmd() {
   if [ -n "${ADB_SERIAL:-}" ]; then adb -s "$ADB_SERIAL" "$@"; else adb "$@"; fi
 }
 
-# dev <shell-command-string>
-dev() { adb_cmd shell "$@"; }
+# adb shell allocates a PTY and runs a login shell per call, which on this stick takes
+# seconds and turns output into CRLF noise. exec-out is raw and much faster, so use it
+# for reads and fall back to shell if it is unavailable.
+ADB_BIN=(adb)
+if [ -n "${ADB_SERIAL:-}" ]; then ADB_BIN+=(-s "$ADB_SERIAL"); fi
+
+# dev <shell-command-string> - one device command, capped at 60s so a hanging
+# qmicli/nmcli call cannot stall a whole snapshot.
+dev() {
+  timeout 60 "${ADB_BIN[@]}" exec-out "$*" 2>/dev/null ||
+    timeout 60 "${ADB_BIN[@]}" shell "$*" | tr -d '\r'
+}
 
 require_device() {
   command -v adb >/dev/null 2>&1 || die "missing host command: adb"

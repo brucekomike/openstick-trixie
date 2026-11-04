@@ -68,7 +68,8 @@ fi
 
 log "device reachable?"
 if adb get-state >/dev/null 2>&1; then
-  echo "  yes: $(adb -s "${ADB_SERIAL:-}" shell 'uname -n' 2>/dev/null | tr -d '\r') ($(adb devices | sed -1d | wc -l) device)"
+  NDEV=$(adb devices | awk 'NR>1 && $2=="device"' | wc -l)
+  echo "  yes: $(adb ${ADB_SERIAL:+-s $ADB_SERIAL} shell 'uname -n' 2>/dev/null | tr -d '\r') ($NDEV adb device(s) listed)"
 else
   echo "  no adb device in get-state - skip device steps until it is plugged in"
 fi

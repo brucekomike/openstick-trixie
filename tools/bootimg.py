@@ -37,7 +37,7 @@ def cstr(raw: bytes) -> str:
 def parse(data: bytes) -> dict:
     if not data.startswith(MAGIC):
         sys.exit("not an Android boot image (no ANDROID! magic)")
-    h = struct.unpack_from("<8I", data, 8)
+    h = struct.unpack_from("<10I", data, 8)
     info = {name: val for (name, _), val in zip(FIELDS, h)}
     info["name"] = cstr(data[48:64])
     info["cmdline"] = cstr(data[64:576])
@@ -141,8 +141,8 @@ def cmd_repack(a):
     out += kernel.ljust(align(len(kernel), page), b"\x00")
     out += ramdisk.ljust(align(len(ramdisk), page), b"\x00")
     if info["second_size"]:
-        out += stock[info["second_offset"]:info["second_offset"] +
-                    align(info["second_size"], page)].ljust(0)
+        sys.exit("ERROR: this stock image carries a second-stage (stage2) blob; "
+                 "repacking would drop it. Not supported - edit the tool or keep route A.")
     dest = Path(a.output)
     dest.write_bytes(bytes(out))
     print(f"repacked {dest}: kernel={len(kernel)} ramdisk={len(ramdisk)} "
