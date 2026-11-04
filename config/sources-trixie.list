@@ -1,0 +1,6 @@
+# Route A target: Debian 13. Install as /etc/apt/sources.list on the stick.
+# non-free-firmware is now its own component (split out in bookworm) - keep it, the
+# modem/wcn blobs we re-inject from backup are unrelated but apt will want honesty here.
+deb https://mirrors.tuna.tsinghua.edu.cn/debian trixie main contrib non-free non-free-firmware
+deb https://mirrors.tuna.tsinghua.edu.cn/debian trixie-updates main contrib non-free
+deb https://mirrors.tuna.tsinghua.edu.cn/debian-security trixie-security main contrib non-free non-free-firmware

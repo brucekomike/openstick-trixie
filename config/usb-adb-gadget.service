@@ -1,0 +1,16 @@
+[Unit]
+Description=Dependency-free RNDIS+ADB USB gadget (survives distro upgrade)
+Documentation=file:/usr/share/doc/openstick-trixie/README.md
+After=systemd-udevd.service
+# The stock mobian unit needs the non-packaged `gc` binary; this one does not,
+# but they both own g1, so exactly one of the two may be enabled.
+Conflicts=mobian-usb-gadget.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/usb-adb-gadget setup
+ExecStop=/usr/sbin/usb-adb-gadget reset
+
+[Install]
+WantedBy=multi-user.target

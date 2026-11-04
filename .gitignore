@@ -1,0 +1,11 @@
+# Generated state and vendored upstream - none of it belongs in git.
+/backup/
+/notes/
+/out/
+/vendor/
+*.bin
+*.img
+*.tar
+*.tar.zst
+*.tmp
+MANIFEST.sha256

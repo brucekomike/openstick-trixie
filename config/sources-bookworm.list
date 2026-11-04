@@ -1,0 +1,5 @@
+# Route A intermediate step: bullseye -> bookworm. Install as /etc/apt/sources.list
+# on the stick (scripts/40-inplace-upgrade.sh does that with COMMIT=1).
+deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm main contrib non-free non-free-firmware
+deb https://mirrors.tuna.tsinghua.edu.cn/debian bookworm-updates main contrib non-free
+deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
