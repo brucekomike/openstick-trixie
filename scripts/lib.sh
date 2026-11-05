@@ -119,10 +119,16 @@ require_device() {
 # what the device actually reports, and every fastboot call is pinned to the serial.
 
 fb_resolve() {
-  [ -n "${FB:-}" ] && return 0
-  FB=${FASTBOOT:-$HOME/.local/bin/fastboot}
-  command -v "$FB" >/dev/null 2>&1 || FB=$(command -v fastboot || true)
-  [ -n "$FB" ] || die "no fastboot binary (see scripts/README: ~/.local/bin/fastboot from platform-tools)"
+  [ -n "${FB_BIN:-}" ] && return 0
+  FB_BIN=${FASTBOOT:-$HOME/.local/bin/fastboot}
+  command -v "$FB_BIN" >/dev/null 2>&1 || FB_BIN=$(command -v fastboot || true)
+  [ -n "$FB_BIN" ] || die "no fastboot binary (see scripts/README: ~/.local/bin/fastboot from platform-tools)"
+  # An array rather than a scalar or a shell function: most call sites are
+  # `timeout N fastboot ...`, and timeout needs a real argv, so a function wrapper cannot be
+  # substituted there. "${FB[@]}" is what every call site should expand.
+  FB=( "$FB_BIN" )
+  if [ -n "${BOARD_SERIALNO:-}" ]; then FB+=( -s "$BOARD_SERIALNO" ); fi
+  return 0
 }
 
 # fb <args...> - fastboot for THIS board. Without -s, fastboot takes whichever device it
@@ -130,16 +136,16 @@ fb_resolve() {
 # fastboot would happily accept this board's image.
 fb() {
   fb_resolve
-  if [ -n "${BOARD_SERIALNO:-}" ]; then "$FB" -s "$BOARD_SERIALNO" "$@"; else "$FB" "$@"; fi
+  "${FB[@]}" "$@"
 }
 
 # fb_present - is this board (not merely some board) in fastboot?
 fb_present() {
   fb_resolve
   if [ -n "${BOARD_SERIALNO:-}" ]; then
-    timeout 10 "$FB" devices 2>/dev/null | grep -qE "^${BOARD_SERIALNO}[[:space:]]+fastboot"
+    timeout 10 "$FB_BIN" devices 2>/dev/null | grep -qE "^${BOARD_SERIALNO}[[:space:]]+fastboot"
   else
-    timeout 10 "$FB" devices 2>/dev/null | grep -q fastboot
+    timeout 10 "$FB_BIN" devices 2>/dev/null | grep -q fastboot
   fi
 }
 

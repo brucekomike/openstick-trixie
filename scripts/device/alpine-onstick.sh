@@ -114,6 +114,11 @@ say "2/8 package set"
 PKGS="openrc eudev udev-init-scripts udev-init-scripts-openrc dbus dropbear shadow sudo"
 PKGS="$PKGS chrony iw wireless-regdb iproute2 iptables bridge-utils dnsmasq"
 PKGS="$PKGS e2fsprogs e2fsprogs-extra zstd parted"
+# gcompat is what lets the vendor's glibc adbd run on this musl rootfs, which is the only
+# way to get `adb shell` here: Alpine packages no adbd at all, and the edge/testing one is
+# Waydroid's build with no functionfs transport. scripts/76-fetch-adbd-payload.sh has the
+# full measurement; scripts/55-patch-alpine-image.sh refuses to inject adbd without this.
+PKGS="$PKGS gcompat"
 # Alpine splits NetworkManager into daemon + cli + tui + dnsmasq + wifi + wwan. Installing
 # only `networkmanager` gives a daemon with no nmcli, and the Wi-Fi door this board relies
 # on would then need a hand-written wpa_supplicant conf. Found by verifying the first image.

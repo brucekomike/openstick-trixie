@@ -88,12 +88,21 @@ Countermeasures in this repo:
 | `scripts/30-net-up.sh` | internet for the stick via USB-gadget NAT (`--down` to revert) |
 | `scripts/40-inplace-upgrade.sh` | **route A**: preflight, then stage bookworm/trixie with the kernel held and the fallback unit installed |
 | `scripts/50-build-rootfs.sh` | **route B**: docker/debootstrap trixie rootfs + firmware + 5.15 modules + gadget unit → `out/rootfs-trixie.img` |
+| `scripts/54-build-alpine-onstick.sh` | **route D**: build Alpine natively *on the stick* (no qemu/binfmt/host sudo), pull `out/alpine-{rootfs,boot}.img`; refuses to build unless the backup's DTB matches the live model tag |
+| `scripts/55-patch-alpine-image.sh` | patch a built image with debugfs before flashing: configfs gadget, ACM console, and the adb payload; refuses an image without `gcompat` |
 | `scripts/60-build-bootimg.sh` | `info`/`unpack`/`repack` the Android boot image (`tools/bootimg.py`, stdlib only) |
-| `scripts/66-make-extlinux-boot.sh` | build the 64 MiB ext2 `boot` image lk2nd reads, packing **this board's own DTB** (`DTS-DIFF-ufi001c.md` explains why not `thwc-ufi001c`) |
+| `scripts/66-make-extlinux-boot.sh` | **superseded by `68-`** — the factory aboot has no extlinux parser at all, so this image cannot boot without the aboot swap |
+| `scripts/68-make-mainline-boot.sh` | build the 64 MiB ext2 + `extlinux.conf` boot image for a mainline kernel, packing both the community DTB and this board's own |
 | `scripts/70-flash.sh` | the only partition writer; dry-run by default; refuses calibration labels |
+| `scripts/72-enter-fastboot.sh` | get into fastboot from a running system with no hands: `reboot(2)` `RESTART2 "bootloader"` over ssh (~4 s) |
+| `scripts/74-flash-mainline-bootchain.sh` | `status`/`aboot`/`boot`/`all`/`restore` — flash the community `aboot`+`hyp`, then the ext2 boot image; `restore` returns every partition it can write to factory |
+| `scripts/76-fetch-adbd-payload.sh` | assemble + verify `out/adbd-payload/` (vendor `adbd` + `libcrypto.so.1.1`), the three files that give a musl rootfs a root `adb shell` |
 | `scripts/90-restore.sh` | `verify` / restore `boot` / guarded rootfs paths |
 
-`make help` lists the same thing.
+`make help` lists the same thing. Every script also takes `BACKUP=` and `BOARD_ENV=`, because the two
+boards' partition dumps are not interchangeable — `scripts/lib.sh`'s `require_board` refuses to run
+when the live DT model, the env file and the backup tree disagree, and pins every fastboot call to
+that board's serial.
 
 ## Alternative distro: Alpine
 

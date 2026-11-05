@@ -1,11 +1,11 @@
 SHELL := /bin/bash
 SC := scripts
 
-.PHONY: help check vendor fixup snapshot backup backup-full net plan upgrade-check rootfs alpine alpine-patch bootimg-info extlinux mainline-boot enter-fastboot bootchain-status bootchain bootchain-restore restore-verify test
+.PHONY: help check vendor fixup snapshot backup backup-full net plan upgrade-check rootfs alpine alpine-patch adbd-payload bootimg-info extlinux mainline-boot enter-fastboot bootchain-status bootchain bootchain-restore restore-verify test
 
 test:
 	python3 -m unittest discover -s tests -v
-	@for f in scripts/*.sh config/usb-adb-gadget.sh; do bash -n "$$f" || exit 1; done
+	@for f in scripts/*.sh scripts/device/*.sh config/usb-adb-gadget.sh config/alpine-gadget/*.sh; do bash -n "$$f" || exit 1; done
 	@echo "all scripts parse"
 
 help:
@@ -20,7 +20,8 @@ help:
 	@echo "make upgrade-check  route A preflight only"
 	@echo "make rootfs         route B: build trixie rootfs image (needs arm64 binfmt, COMMIT=1)"
 	@echo "make alpine         route D: build Alpine on the stick, pull boot+rootfs images (COMMIT=1)"
-	@echo "make alpine-patch   patch a built Alpine image (gadget bring-up + ACM console) before flashing"
+	@echo "make alpine-patch   patch a built Alpine image (gadget + ACM console + adb) before flashing"
+	@echo "make adbd-payload   assemble+verify the adbd payload alpine-patch injects (read-only)"
 	@echo "make mainline-boot  build the ext2+extlinux boot image for a mainline kernel"
 	@echo "make enter-fastboot get into fastboot from a running system, no hands (reboot RESTART2)"
 	@echo "make bootchain-status  what bootloader files exist, and what the stick is doing"
@@ -43,6 +44,7 @@ upgrade-check:; $(SC)/40-inplace-upgrade.sh
 rootfs:       ; $(SC)/50-build-rootfs.sh
 alpine:       ; COMMIT=1 $(SC)/54-build-alpine-onstick.sh
 alpine-patch: ; $(SC)/55-patch-alpine-image.sh
+adbd-payload: ; $(SC)/76-fetch-adbd-payload.sh
 bootimg-info: ; $(SC)/60-build-bootimg.sh info
 extlinux:     ; $(SC)/66-make-extlinux-boot.sh
 mainline-boot:; $(SC)/68-make-mainline-boot.sh

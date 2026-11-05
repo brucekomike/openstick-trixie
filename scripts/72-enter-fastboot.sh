@@ -14,12 +14,10 @@
 # If it does not work, the fallback is physical: hold the EDL/reset button while plugging in.
 . "$(dirname "$0")/lib.sh"
 
-FB=${FASTBOOT:-$HOME/.local/bin/fastboot}
-command -v "$FB" >/dev/null 2>&1 || FB=$(command -v fastboot || true)
-[ -n "$FB" ] || die "no fastboot binary (scripts/README: ~/.local/bin/fastboot from platform-tools)"
+fb_resolve      # sets FB_BIN and the FB=(...) array, pinned to this board's BOARD_SERIALNO
 
-if timeout 10 "$FB" devices 2>/dev/null | grep -q fastboot; then
-  log "already in fastboot:"; "$FB" devices | sed 's/^/  /'; exit 0
+if fb_present; then
+  log "already in fastboot:"; "${FB[@]}" devices | sed 's/^/  /'; exit 0
 fi
 
 SSH_KEY=${SSH_KEY:-$OUT/openstick_key}
@@ -32,7 +30,15 @@ if ! timeout 20 $SSH 'echo alive' 2>/dev/null | grep -q alive; then
        plugging the stick in, then re-run; lsusb should show 18d1:d00d (fastboot) or
        05c6:9008 (EDL)."
 fi
-echo "  ok: $($SSH 'uname -r' 2>/dev/null)"
+# This script reboots whatever answers $SSH_HOST. With two sticks attached both serve
+# 192.168.5.1, so confirm the identity BEFORE pulling that trigger - rebooting the wrong
+# board into fastboot is exactly the kind of cross-board mistake require_board exists to stop.
+live_sn=$(timeout 20 $SSH 'tr -d "\0" < /proc/device-tree/serial-number' 2>/dev/null | tr -d '[:space:]')
+if [ -n "${BOARD_SERIALNO:-}" ] && [ -n "$live_sn" ] && [ "$live_sn" != "$BOARD_SERIALNO" ]; then
+  die "$SSH_HOST answered with serial '$live_sn' but this run is configured for '$BOARD_SERIALNO'.
+       That is a different board; set BOARD_ENV=/SSH_HOST= or unplug the other stick."
+fi
+echo "  ok: $($SSH 'uname -r' 2>/dev/null) (serial ${live_sn:-<unreadable>})"
 
 log "2/3 make sure the RESTART2 helper is installed"
 if ! timeout 20 $SSH 'test -x /usr/local/bin/reboot-bootloader.py' 2>/dev/null; then
@@ -48,10 +54,13 @@ log "3/3 reboot(2) RESTART2 \"bootloader\""
 timeout 25 $SSH 'sync; python3 /usr/local/bin/reboot-bootloader.py' 2>/dev/null || true
 for i in $(seq 1 30); do
   sleep 3
-  if timeout 8 "$FB" devices 2>/dev/null | grep -q fastboot; then
+  if fb_present; then
     echo "  in fastboot after ~$((i * 3))s"
-    "$FB" devices | sed 's/^/  /'
-    timeout 10 "$FB" getvar version 2>&1 | grep -v Finished | sed 's/^/  /'
+    "${FB[@]}" devices | sed 's/^/  /'
+    timeout 10 "${FB[@]}" getvar version 2>&1 | grep -v Finished | sed 's/^/  /'
+    # version-special is how you tell which aboot is answering: the factory one reports
+    # "qhypstub 0.3-r3", the community one reports empty (BOARD-ufi001c.md §3).
+    timeout 10 "${FB[@]}" getvar version-special 2>&1 | grep -v Finished | sed 's/^/  /'
     exit 0
   fi
 done

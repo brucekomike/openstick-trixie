@@ -26,23 +26,26 @@
 #     Touching sbl1/rpm is the riskiest flash on this SoC, so it is deliberately not done.
 . "$(dirname "$0")/lib.sh"
 
-FB=${FASTBOOT:-$HOME/.local/bin/fastboot}
-command -v "$FB" >/dev/null 2>&1 || FB=$(command -v fastboot || true)
-[ -n "$FB" ] || die "no fastboot binary"
+fb_resolve      # sets FB_BIN and the FB=(...) array, pinned to this board's BOARD_SERIALNO
 V="$ROOT/vendor/openstick-alpine-v0.2"
 BOOT_IMG=${BOOT_IMG:-$OUT/boot-mainline.img}
 STAGE=${1:-status}
 
 need_fb() {
-  timeout 10 "$FB" devices 2>/dev/null | grep -q fastboot ||
-    die "stick is not in fastboot. Run scripts/72-enter-fastboot.sh (from Linux, no hands), or
-       hold the EDL/reset button while plugging it in."
+  fb_present ||
+    die "board ${BOARD_SERIALNO:-<no serial>} is not in fastboot. Run scripts/72-enter-fastboot.sh
+       (from Linux, no hands), or hold the EDL/reset button while plugging it in.
+       fastboot devices says: $(timeout 10 "$FB_BIN" devices 2>/dev/null | tr '\n' ' ')"
+  # Also proves $BACKUP belongs to this board before anything is written from it: `restore`
+  # re-flashes aboot/hyp/sbl1/rpm/tz/boot out of that tree, and the two boards' dumps are not
+  # interchangeable.
+  require_board
 }
 # Every partition this script can write must have a verified backup first.
 need_backups() {
   local f
   for f in "$@"; do
-    [ -s "$BACKUP/$f" ] || die "missing backup/$f - run scripts/20-backup.sh before flashing anything"
+    [ -s "$BACKUP/$f" ] || die "missing $BACKUP/$f - run scripts/20-backup.sh before flashing anything"
   done
 }
 
@@ -63,8 +66,10 @@ case "$STAGE" in
     [ -s "$BOOT_IMG" ] && printf '  boot img  %-16s %9d B  %s\n' "$(basename "$BOOT_IMG")" "$(stat -c %s "$BOOT_IMG")" \
       "$(debugfs -R 'cat /extlinux/extlinux.conf' "$BOOT_IMG" 2>/dev/null | grep '^fdt' || echo '(no extlinux.conf!)')"
     echo -n "  stick:    "
-    if timeout 10 "$FB" devices 2>/dev/null | grep -q fastboot; then
-      echo "fastboot ($("$FB" getvar version 2>&1 | grep -oE 'version: .*' | head -1))"
+    # fb_present, not `fastboot devices | grep fastboot`: with two boards attached the
+    # unpinned check reports "in fastboot" when only the *other* one is.
+    if fb_present; then
+      echo "fastboot ($("${FB[@]}" getvar version 2>&1 | grep -oE 'version: .*' | head -1))"
     elif lsusb | grep -q '05c6:9008'; then echo "EDL (9008)"
     elif lsusb | grep -q '1d6b:0104'; then echo "Linux, gadget up - use scripts/72-enter-fastboot.sh"
     else echo "not responding on USB"; fi
@@ -78,15 +83,15 @@ case "$STAGE" in
     for pair in "aboot:aboot.mbn" "hyp:hyp.mbn"; do
       part=${pair%%:*}; file=${pair##*:}
       printf '  fastboot flash %-6s %s\n' "$part" "$file"
-      timeout 120 "$FB" flash "$part" "$V/$file" 2>&1 | grep -E 'OKAY|FAILED' | sed 's/^/    /'
+      timeout 120 "${FB[@]}" flash "$part" "$V/$file" 2>&1 | grep -E 'OKAY|FAILED' | sed 's/^/    /'
     done
     if [ "$STAGE" = all ]; then
-      "$FB" reboot >/dev/null 2>&1 || true
+      "${FB[@]}" reboot >/dev/null 2>&1 || true
       log "waiting to see whether the new aboot still boots the stock image"
       for i in $(seq 1 30); do
         sleep 4
         lsusb | grep -q '1d6b:0104' && { echo "  Linux came up under the new aboot at ~$((i * 4))s"; break; }
-        if [ "$i" -ge 6 ] && timeout 8 "$FB" devices 2>/dev/null | grep -q fastboot; then
+        if [ "$i" -ge 6 ] && fb_present; then
           echo "  sitting in the new aboot's fastboot at ~$((i * 4))s (fine - continuing)"; break
         fi
       done
@@ -106,9 +111,9 @@ case "$STAGE" in
     [ "${COMMIT:-0}" = 1 ] || die "refusing to write boot without COMMIT=1"
     log "flashing $BOOT_IMG"
     debugfs -R "cat /extlinux/extlinux.conf" "$BOOT_IMG" 2>/dev/null | sed 's/^/  | /'
-    timeout 300 "$FB" flash boot "$BOOT_IMG" 2>&1 | grep -E 'Sending|Writing|OKAY|FAILED' | sed 's/^/  /'
+    timeout 300 "${FB[@]}" flash boot "$BOOT_IMG" 2>&1 | grep -E 'Sending|Writing|OKAY|FAILED' | sed 's/^/  /'
     log "rebooting"
-    timeout 30 "$FB" reboot >/dev/null 2>&1 || true
+    timeout 30 "${FB[@]}" reboot >/dev/null 2>&1 || true
     for i in $(seq 1 40); do
       sleep 4
       if lsusb | grep -q '1d6b:0104'; then
@@ -116,8 +121,17 @@ case "$STAGE" in
         SSH="ssh -i ${SSH_KEY:-$OUT/openstick_key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 root@192.168.5.1"
         # The gadget appearing is not the same as being usable: the host still has to take a
         # DHCP lease from the stick's dnsmasq, and dropbear starts after that. Retry, don't guess.
+        # Nor is "192.168.5.1 answered" the same as "the board we flashed answered" - with two
+        # sticks attached the other one serves that same address. Compare the device-tree
+        # serial-number against BOARD_SERIALNO before believing any of it.
         for t in 1 2 3 4 5 6; do
-          if timeout 15 $SSH 'echo "  running: $(uname -r)"; echo "  dtb:     $(tr -d "\0" < /proc/device-tree/model)"' 2>/dev/null; then
+          if timeout 15 $SSH 'echo "  running: $(uname -r)"; echo "  dtb:     $(tr -d "\0" < /proc/device-tree/model)"; echo "  serial:  $(tr -d "\0" < /proc/device-tree/serial-number)"' 2>/dev/null; then
+            live_sn=$(timeout 15 $SSH 'tr -d "\0" < /proc/device-tree/serial-number' 2>/dev/null | tr -d '[:space:]')
+            if [ -n "${BOARD_SERIALNO:-}" ] && [ "$live_sn" != "$BOARD_SERIALNO" ]; then
+              die "192.168.5.1 answered with serial '$live_sn' but this run is for '$BOARD_SERIALNO' -
+       a DIFFERENT board replied. Do not record this as a successful boot."
+            fi
+            echo "  ok: serial ${live_sn:-<unreadable>} matches ${BOARD_SERIALNO:-<unset>}"
             exit 0
           fi
           sleep 8
@@ -125,7 +139,7 @@ case "$STAGE" in
         warn "gadget is up but ssh did not answer after ~60 s - check /dev/ttyACM0"
         exit 1
       fi
-      if [ "$i" -ge 8 ] && timeout 8 "$FB" devices 2>/dev/null | grep -q fastboot; then
+      if [ "$i" -ge 8 ] && fb_present; then
         echo "  back in fastboot at ~$((i * 4))s: the image did not boot"
         echo "  try the other DTB (no reflash needed once Linux runs, but from here: rebuild with DTB=)"
         echo "  undo:  COMMIT=1 $0 restore"
@@ -139,14 +153,14 @@ case "$STAGE" in
     need_fb
     [ "${COMMIT:-0}" = 1 ] || die "refusing to restore without COMMIT=1"
     need_backups part-aboot.bin part-hyp.bin part-sbl1.bin part-rpm.bin part-tz.bin boot-stock.bin
-    log "restoring every partition this project can write, from backup/"
+    log "restoring every partition this project can write, from $BACKUP/"
     for pair in "aboot:part-aboot.bin" "hyp:part-hyp.bin" "sbl1:part-sbl1.bin" "rpm:part-rpm.bin" "tz:part-tz.bin" "boot:boot-stock.bin"; do
       part=${pair%%:*}; file=${pair##*:}
       printf '  fastboot flash %-6s %-18s ' "$part" "$file"
-      timeout 600 "$FB" flash "$part" "$BACKUP/$file" 2>&1 | grep -oE 'OKAY|FAILED.*' | head -1
+      timeout 600 "${FB[@]}" flash "$part" "$BACKUP/$file" 2>&1 | grep -oE 'OKAY|FAILED.*' | head -1
     done
     log "rebooting into the factory chain (vendor 5.15 + whatever is in rootfs)"
-    timeout 30 "$FB" reboot >/dev/null 2>&1 || true
+    timeout 30 "${FB[@]}" reboot >/dev/null 2>&1 || true
     ;;
 
   *)

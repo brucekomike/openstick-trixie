@@ -7,9 +7,9 @@ already said, the correction is called out explicitly.
 **Current state: Alpine Linux v3.24.2 on mainline kernel `6.12.1-msm8916`**, booted by the
 community `lk1st` in `aboot` from an ext2 `boot` partition with `extlinux.conf`. Wi-Fi associated,
 Bluetooth `hci0` present, **LTE modem fully probed** (IMEI read, all bands enumerated — only
-`sim-missing`), rootfs grown to the full 3.3 GiB, two admin doors open (ssh over NCM, passwordless
-root shell over USB serial), and a software-only path back into fastboot. The factory bootloader
-chain is in `backup/` and one command restores it.
+`sim-missing`), rootfs grown to the full 3.3 GiB, **four admin doors open** — a root `adb shell`
+as `<serial-001c>` (§4a), ssh over NCM, a passwordless root shell over USB serial, and a software-only
+path back into fastboot. The factory bootloader chain is in `backup/` and one command restores it.
 
 Getting there took two false starts, and both are documented below because each one is a trap that
 looks like a hardware limit and is not.
@@ -156,16 +156,23 @@ Alpine v3.24.2 (musl, OpenRC). rootfs = `out/alpine-rootfs.img`, built **on the 
   that is why WCNSS/Wi-Fi and the modem firmware load.
 * packages: openrc, eudev, dbus, dropbear, networkmanager (+`-cli`/`-tui`/`-dnsmasq`/`-wifi`/`-wwan`),
   modemmanager, libqmi, rmtfs, msm-firmware-loader, chrony, iw, wpa_supplicant, dnsmasq,
-  e2fsprogs(+extra), parted, iproute2, iptables, usbutils, zstd, python3.
-* admin doors, all three verified:
+  e2fsprogs(+extra), parted, iproute2, iptables, usbutils, zstd, python3, **gcompat** (for adb, below).
+* admin doors, all four verified:
+  * **`adb -s <serial-001c> shell` — a root shell** (`id -u` = 0), and `adb push`/`pull` are binary-safe
+    (1 MiB of `/dev/urandom`, md5 identical host→device→host). Added 2026-11-06; see §4a for how
+    and why it needs three files that no package provides. `adb exec-out` still answers
+    `error: closed`, exactly as the vendor adbd on the Debian image does, so `scripts/lib.sh`'s
+    per-run probe and its stage-then-pull path are still the right design.
   * `ssh -i out/openstick_key root@192.168.5.1` — dropbear, key auth. `user`/`1` also exists
-    (upstream's default — change it).
+    (upstream's default — change it). Over Wi-Fi the same key works on the DHCP address
+    (`root@192.168.24.162` here), which is the door that survives a USB gadget that will not
+    come up — it is how the two gadget bugs below were diagnosed.
   * `/dev/ttyACM0` on the host → `ttyGS0::respawn:/bin/sh` — a **passwordless root shell** on the
     USB serial console (configfs ACM function). Deliberate: it is the only door that works when
     networking is what broke, and it is how the gadget bring-up bug was diagnosed. Needs `dialout`.
   * `scripts/72-enter-fastboot.sh` — software-only fastboot entry (§3).
-* USB gadget: configfs NCM + ACM (`config/alpine-gadget/setup_gadget.sh`) created by a udev rule on
-  UDC add. `usb0` = 192.168.5.1/24, brought up by `gadget-net-up.sh` from `/etc/inittab`
+* USB gadget: configfs **NCM + ACM + ffs.adb** (`config/alpine-gadget/setup_gadget.sh`) created by a
+  udev rule on UDC add. `usb0` = 192.168.5.1/24, brought up by `gadget-net-up.sh` from `/etc/inittab`
   (`::once:`), with dnsmasq serving 192.168.5.20–60 so the host needs no configuration.
 
 Host-side gotchas worth remembering: ModemManager on the laptop grabs `/dev/ttyACM0` to probe it
@@ -175,6 +182,93 @@ to `dialout` fixes access; `ENV{ID_MM_DEVICE_IGNORE}="1"` for `1d6b:0104` fixes 
 `ping 192.168.5.1` "succeeds" even with the stick unreachable, because the LAN gateway answers it
 (`ttl=253`, 0.7 ms) — always check `ip route get 192.168.5.1` first. That false positive nearly got
 recorded as a successful boot.
+
+## 4a. adb on a musl rootfs — what does not work, and the three files that do
+
+Added and verified 2026-11-06. `adb -s <serial-001c> shell` gives **uid 0**, and push/pull are
+binary-safe. This section exists because the obvious routes are all dead ends, and each dead end
+looks like a packaging oversight rather than what it actually is.
+
+**Alpine has no adbd.** `android-tools-adb-35.0.2-r21` contains exactly one file, `usr/bin/adb` —
+the client. There is no `-adbd` subpackage in v3.24 main, community, or the pmOS v25.12 overlay.
+
+**The one that does exist is the wrong daemon.** `adbd-0_git20261018-r0` in **edge/testing** (from
+`gitlab.com/android_translation_layer/art_standalone`, the build Waydroid uses) is musl-native,
+which makes it look like the answer. It is not: neither it nor the three libraries it links
+(`libbase.so`, `libcutils.so`, `liblog.so`) contains a `/dev/usb-ffs` path or a
+`FUNCTIONFS_DESCRIPTORS_MAGIC` — **no USB gadget transport**. It also depends on `art_standalone`,
+a whole Android runtime: 29.5 MB installed with `dalvikvm`/`dex2oat`/`libart`, needing
+`libicui18n.so.78`/`libicuuc.so.78` that only exist in edge, so it would drag an ICU upgrade into a
+v3.24 system. For comparison the three libs adbd actually needs total 268 KB.
+
+**The vendor adbd is the right one, and it runs.** `backup/usr-bin-adbd` (md5 `3f26a5bd…`, identical
+in both boards' backups) has `usb_linux_client.c`, `init_functionfs` and the literal
+`/dev/usb-ffs/adb/ep0..ep2`. It is glibc — but its dependency set is only `libc.so.6`,
+`libpthread.so.0` (both from **`gcompat`**), `libz.so.1` (already in the base image) and
+`libcrypto.so.1.1`, because **libcutils is statically linked in**. Its highest glibc symbol version
+is `GLIBC_2.17`, well inside gcompat's reach. Running it prints
+`install_listener('tcp:5037','*smartsocket*')` and, once functionfs is mounted, `ep1`/`ep2` appear —
+the proof that it wrote its descriptors.
+
+`libcrypto.so.1.1` cannot be substituted. adbd references the **versioned** symbol
+`RSA_verify@OPENSSL_1_1_0`; Alpine 3.24 ships `libcrypto.so.3` exporting
+`RSA_verify@@OPENSSL_3.0.0`, so a symlink does not resolve. It comes from Debian 11's `libssl1.1`
+(arm64, `1.1.1w-0+deb11u5`, sha256 `9c51e429…`), whose own extra dependency `libdl.so.2` is
+satisfied by symlinking it to `libgcompat.so.0` — the same shim gcompat uses for `libc.so.6`.
+
+Three files, ~3.4 MB total, none of them packaged:
+
+| file | from | to |
+|---|---|---|
+| `adbd` (610,608 B) | `backup/usr-bin-adbd` | `/usr/local/sbin/adbd` 0755 |
+| `libcrypto.so.1.1` (2,752,240 B) | Debian 11 `libssl1.1` arm64 | `/usr/lib/libcrypto.so.1.1` 0644 |
+| `libdl.so.2` | symlink → `libgcompat.so.0` | `/lib/libdl.so.2` |
+
+plus `apk add gcompat` (pulls `musl-obstack`, `libucontext`).
+
+Reproduce:
+
+```
+scripts/76-fetch-adbd-payload.sh     # assemble out/adbd-payload/ and verify all five properties
+scripts/55-patch-alpine-image.sh     # inject into out/alpine-rootfs.img with debugfs, then e2fsck
+```
+
+`76-` refuses to continue unless the payload really has the versioned `RSA_verify`, really NEEDs
+`libcrypto.so.1.1`, and really carries the functionfs transport; `55-` refuses to inject into an
+image without `libgcompat.so.0`. On a running board the same three files can be pushed over ssh
+(`cat f | ssh … 'cat > /path'` — dropbear has no sftp-server) and `setup_gadget.sh` picks them up.
+
+**The gadget side, where both bugs were.** `setup_gadget.sh` now creates `ffs.adb` and links it, and
+the ordering is not negotiable:
+
+1. `mkdir functions/ffs.adb` **before** mounting. The kernel only allocates the ffs device when the
+   configfs instance is created, so `mount -t functionfs adb /dev/usb-ffs/adb` returns **ENODEV**
+   if it runs first — leaving an empty directory with no `ep0`. The mount *source* must also equal
+   the instance name (`adb`); `mount -t functionfs dev …` fails the same way.
+2. Start adbd, then **wait for `ep1`**. Its appearance is the proof the descriptors were written.
+3. Only then `ln -s functions/ffs.adb configs/c.1/`. Linking a not-yet-active ffs function gives
+   **EINVAL**, and a config cannot be modified at all while the gadget is bound to a UDC — so a
+   live rebind needs `echo "" > UDC` first (writing the UDC name again is a *bind* request and
+   fails EBUSY). Do that over the Wi-Fi door: unbinding drops NCM *and* ACM together.
+4. `echo <udc> > UDC` last.
+
+adbd inherits its environment and cwd from whoever started it, and it hands both to every
+`adb shell`. Started from a udev rule that has `cd`'d into configfs, that produced two symptoms
+which both look like a broken rootfs and are not: the shell landed in
+`/sys/kernel/config/usb_gadget/ncm-acm-gadget`, and **`apk` was "not found"** because Alpine keeps
+it at `/sbin/apk` and the inherited environment had no `PATH` at all. ssh and the `ttyGS0` console
+were unaffected, which is the tell. `setup_gadget.sh` therefore launches adbd from a subshell
+`cd`'d to `/root` with an explicit `PATH` (including `/sbin`), `HOME=/root` and `TERM=linux`.
+
+The gadget's `serialnumber` is read from **`/proc/device-tree/serial-number`** (the eMMC serial,
+`<serial-001c>`) instead of upstream's hardcoded `fedcba9876543210`. That is what finally makes the two
+sticks distinguishable in `adb devices` — under the vendor images both report the placeholder
+`0123456789` (§1).
+
+Two measurement traps worth keeping: `debugfs -R "stat <path>"` **exits 0 for a path that does not
+exist**, so it is useless as a presence test (list and match instead); and `grep -q` exits on first
+match, sending SIGPIPE to a large producer, so under `set -o pipefail` a *successful*
+`readelf --dyn-syms | grep -q` reports failure — turn pipefail off for that kind of check.
 
 ## 5. Getting a newer kernel: what failed, and what actually fixed it
 
@@ -292,9 +386,13 @@ a second SIM slot is ever needed, that is the file to try.
   gadget works.
 * The stock DTB is *not* the one in use, so the board's own dual-SIM mux GPIOs are not being driven.
   Unknown whether this unit physically has a second slot.
-* No `adb`, ever, on this rootfs: the vendor `/usr/bin/adbd` is glibc (kept as `backup/usr-bin-adbd`)
-  and musl cannot exec it. `scp` also does not work — dropbear has no sftp-server; pipe over ssh
-  (`cat file | ssh … 'cat > /path'`) instead.
+* ~~No `adb`, ever, on this rootfs: the vendor `/usr/bin/adbd` is glibc and musl cannot exec it.~~
+  **Corrected 2026-11-06:** musl cannot exec it *directly*, but `gcompat` can, and adb now works
+  with a root shell — see §4a for the three files it needs and the two packaging dead ends.
+  `scp` still does not work (dropbear has no sftp-server), but `adb push`/`pull` now does and is
+  binary-safe, which is the better tool for large images.
+* `adb exec-out` still answers `error: closed` on this daemon, so `scripts/lib.sh` keeps probing it
+  per run and staging binaries for `adb pull` rather than piping through a PTY.
 * `util-linux` is not installed: no `lsblk`. Use `fdisk -l` / `sfdisk -d`.
 
 ## 7. Recovery
@@ -334,10 +432,13 @@ Order matters; every step here is one that was skipped or done out of order on t
    software door at all.
 4. Get the stick online (Wi-Fi via `nmcli device wifi connect`, or the USB NAT in `30-net-up.sh`).
 5. `COMMIT=1 scripts/54-build-alpine-onstick.sh` — builds natively on the stick, pulls
-   hash-verified images. Then `scripts/55-patch-alpine-image.sh` **before** flashing; patching
-   afterwards costs another whole cycle.
+   hash-verified images. Then, **before** flashing: `scripts/76-fetch-adbd-payload.sh` (assembles
+   and verifies the adbd payload) and `scripts/55-patch-alpine-image.sh` (injects the gadget files
+   and that payload). Patching afterwards costs another whole flash cycle.
 6. `fastboot flash rootfs out/alpine-rootfs.img` (~6.5 min for 940 MB), `fastboot reboot`. Verify:
-   `1d6b:0104` in `lsusb`, a `192.168.5.x` lease, ssh banner says `dropbear`. Then `resize2fs
+   `1d6b:0104` in `lsusb`, a `192.168.5.x` lease, ssh banner says `dropbear`, and
+   `adb -s <serial> shell id` says `uid=0(root)` — the serial is the board's own
+   `<serial-001c>`-style value from `/proc/device-tree/serial-number`, not a placeholder. Then `resize2fs
    /dev/disk/by-partlabel/rootfs`, install the ssh key, change the `user`/`1` password.
 7. Only now the bootloader: `scripts/68-make-mainline-boot.sh`, `scripts/72-enter-fastboot.sh`,
    `COMMIT=1 scripts/74-flash-mainline-bootchain.sh aboot`, reboot and confirm Linux still comes up,
