@@ -1,0 +1,5 @@
+# Name the configfs gadget netdev deterministically, so no profile or script has to guess
+# whether u_ether called it usb0 (as this board's stock rndis gadget appeared) or ncm0
+# (what configfs NCM is called on mainline kernels).
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="ncm*", NAME="usb0"
+SUBSYSTEM=="net", ACTION=="add", KERNEL=="ecm*", NAME="usb0"

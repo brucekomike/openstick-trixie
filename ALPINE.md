@@ -1,5 +1,17 @@
 # Alpine as an alternative to Debian on this stick
 
+> **Superseded in part — read this first.** The Alpine route was executed on the UFI001C on
+> 2026-11-05, and it needed one thing this assessment did not anticipate: **a bootloader swap**.
+> This unit's *factory* aboot has **no `extlinux.conf` support** (`grep -c extlinux` = 0), so the
+> ext2 `boot.raw` the builder produces does not boot on it and `scripts/66-make-extlinux-boot.sh`
+> is unusable there. Flashing OpenStick-Builder v0.2's community `aboot.mbn` + `hyp.mbn` fixes
+> exactly that, and afterwards ext2 + `extlinux.conf` and the **pmOS `6.12.1-msm8916`** kernel both
+> work. `sbl1`/`rpm`/`tz` were never touched. Alpine can also run on the *stock vendor 5.15* kernel
+> from the untouched stock Android `boot` partition, which is the reversible first rung and needs
+> no bootloader change at all. Details, evidence and the five flash/boot cycles (including the
+> byte-identical no-op control that separated the bootloader from the kernel as the cause):
+> [`BOARD-ufi001c.md`](BOARD-ufi001c.md) §3–§5.
+
 Assessment asked for after the Debian route was prepared, because Debian support on these
 MSM8916 sticks is community images rather than an official distro port. Short answer:
 **Debian is still the mainstream choice in practice, but the Alpine route is real, maintained

@@ -1,5 +1,17 @@
 # OpenStick UFI103s → Debian 13 (trixie) toolchain
 
+> **Two boards answer the same adb serial.** Everything below was measured on the stick whose DT
+> model says *UFI103s*, which is still stock (vendor 5.15 + Debian 11). A second unit (*UFI001C*,
+> `androidboot.serialno=<serial-001c>`) is the one that has actually been reflashed and now runs
+> **Alpine v3.24 + mainline `6.12.1-msm8916`**; it differs where it matters — its *factory* aboot
+> had no `extlinux` support (replaced by the community one), its DTB is different, and its LTE
+> modem only probes under the community DTB, not the stock one. Read
+> **[`BOARD-ufi001c.md`](BOARD-ufi001c.md)** first — `adb devices` shows the identical
+> `0123456789` for both, so nothing else in this repo tells you which board is plugged in.
+> Every script takes `BACKUP=` and `BOARD_ENV=` for that reason, and `require_board` in
+> `scripts/lib.sh` refuses to run when the live device, the env file and the backup tree
+> disagree. This stick's tree is `backup-ufi103s/`; `backup/` is the UFI001C's.
+
 Prepares the Debian 13 route for the MSM8916 / Snapdragon 410C-class stick that shows up
 on adb as `0123456789` (`occam/Nexus_4/mako` placeholder strings). Nothing here writes to
 the stick unless you pass `COMMIT=1`, and the one script that can flash raw partitions
@@ -13,7 +25,7 @@ additionally needs `I_WIPE_ROOTFS=yes`.
 | CPU | 4× Cortex-A53 (0xd03), ARMv8.0, aarch64, 4 KB pages, `CONFIG_COMPAT=y` |
 | RAM | **461 MB** total, 387 MB available, zram0 230 MB swap |
 | storage | 3.64 GiB eMMC `H4G2a`; GPT: `sbl1 rpm tz hyp sec cdt modemst1 modemst2 boot(64M) rootfs(3.3G) fsc devinfo aboot(1M) fsg` |
-| boot chain | **lk2nd + qhypstub** (proved by `lk2nd_skip`/`/mnt/lk2nd_rproc_mode` in `part-aboot.bin` and `qhypstub` in `part-hyp.bin`), **no UEFI**; `boot` currently = Android header **v0**, page_size 2048, kernel 9,501,009 B **with appended DTB**, ramdisk 6,644,810 B. lk2nd also accepts `extlinux.conf`, so a newer kernel needs only a `boot` swap — no GPT rewrite |
+| boot chain | **lk1st + qhypstub**, **no UEFI**. Two aboot builds exist and they behave differently — see `BOARD-ufi001c.md` §3. The **factory** one (`backup/part-aboot.bin`, `LK1ST_MSM8916`, `version: 0.5` / `version-special: qhypstub 0.3-r3`) has **no `extlinux` string at all** and only boots a raw Android image or a file named `boot.img` inside an ext2 `boot`; it also refuses a mainline arm64 kernel (5 flash cycles, one byte-identical no-op control that booted). The **community** one (`vendor/openstick-alpine-v0.2/aboot.mbn`, `lk1st-msm8916`, `Failed to parse extlinux.conf`) boots ext2 + `extlinux.conf` and runs **`6.12.1-msm8916`** on this board. `boot` header: Android **v0**, page_size 2048, kernel with appended DTB. **Correction (2026-11-05): the earlier claim "lk2nd also accepts extlinux.conf, so a newer kernel needs only a `boot` swap" was true of the community aboot and false of the factory one, and this repo never said which was installed** |
 | kernel | `5.15.0-jsbsbxjxh66+`, packaged as `…-10.00.Custom` — **exists in no repository** |
 | userland | Debian 11 (glibc 2.31, systemd 247) with Mobian config services |
 | radio | `remoteproc a204000` running, `qrtr-ns`, `rmtfs`, ModemManager, wcn36xx over smd-edge. **There is no `modem` partition** — the modem/DSP blobs are `/lib/firmware` files (~46 MB) |

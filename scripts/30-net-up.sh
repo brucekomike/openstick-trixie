@@ -8,6 +8,9 @@ DOWN=0
 case "${1:-}" in --down) DOWN=1 ;; esac
 
 require_device
+# The recorded host interface/lease goes stale on every replug; use what is live now.
+detect_gadget_if || warn "no host interface in $STICK_GADGET_NET - is the stick's usb0 up?"
+check_uplink_if
 
 if [ "$DOWN" = 1 ]; then
   log "removing the temporary route/DNS from the stick"

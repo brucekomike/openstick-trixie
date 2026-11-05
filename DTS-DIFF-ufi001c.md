@@ -4,6 +4,23 @@ Measured 2026-11-04 by comparing the **stock DTB extracted from this stick's own
 partition** (`out/bootimg/dtb0.dtb`, 49,653 B) against the community sources
 (`vendor/dts/msm8916-thwc-ufi001c.dts`, `vendor/dts/msm8916-ufi.dtsi`).
 
+> **Three corrections from the 2026-11-05 flashing session** ([`BOARD-ufi001c.md`](BOARD-ufi001c.md)):
+> 1. This file analyses the *UFI103s* DTB (`2730cc4b…`). The board that was actually flashed is a
+>    different unit whose model string says UFI001C and whose stock DTB is `33cad00d…` — same
+>    `handsome,openstick` compatible, same four `sim_*` dual-SIM nodes, different bytes.
+> 2. The claim below that "lk2nd's `extlinux.conf` path is available today" is **false for the
+>    factory aboot**: the string `extlinux` does not appear in `part-aboot.bin` at all. It *is*
+>    true of OpenStick-Builder v0.2's community `aboot.mbn`, which is what now sits on that board.
+> 3. "Would probably *boot*" was the wrong thing to be uncertain about. Both DTBs were tried with
+>    the pmOS 6.12 kernel **under the factory aboot**; neither booted, and a byte-identical no-op
+>    repack of the stock image did — so the DTB choice was not the deciding variable, the
+>    bootloader was. Once the community aboot was flashed, `thwc-ufi001c` booted 6.12 first try.
+>
+> What the DTB *did* decide is the radio: the stock `handsome,openstick` DTB has no
+> `rmtfs@`/`mpss@` reserved-memory, so `qcom-q6v5-mss` fails with `unable to resolve mpss region`
+> and there is no modem at all. `thwc-ufi001c` carries both and the modem probes (IMEI read). Its
+> cost is the dual-SIM mux this file describes — it drives one external slot on gpio0–3 instead.
+
 ## What is genuinely shared (so `thwc-ufi001c.dtb` would probably *boot*)
 
 | aspect | stock UFI103s DTB | `thwc-ufi001c` family |

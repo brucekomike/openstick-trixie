@@ -11,3 +11,25 @@ submodules:
   src/libusbgx
 trixie_patch_required=scripts/setup.sh libconfig9 -> libconfig11
 default_board_target=yiming-uz801v3  # NOT this stick: override extlinux/devicetree
+
+# --- added 2026-11-05, for the mainline-kernel work (see BOARD-ufi001c.md §5) -------------
+# The factory aboot on this stick has no extlinux parser and will not start a mainline arm64
+# kernel; the community aboot below does. Both sets are pinned by hash, and every partition they
+# replace is backed up in backup/part-*.bin.
+openstick_release=https://github.com/kinsamanka/OpenStick-Builder/releases/download/v0.2/openstick-alpine.zip
+openstick_release_sha256=a1fbbbcbe8f6c19c41c8bde637a40f6273189bf379ca39658ae402b16d797bd4
+openstick_release_stored=vendor/openstick-alpine-v0.2/{aboot,hyp,sbl1,rpm,tz}.mbn,gpt_both0.bin,SHA256SUMS
+openstick_release_aboot_sha256=441d314b452d32ab461dd8b90e85a461c29ce5d4f71bb6c40d577f2a7a799436
+openstick_release_boot_contents=ext2 64MiB, /vmlinuz=Linux 6.6.0-msm8916 (gzip, EFI-stub), /dtbs/qcom/, /extlinux/extlinux.conf
+lk2nd_release=https://github.com/msm8916-mainline/lk2nd/releases/download/23.1/lk2nd-msm8916.img
+lk2nd_release_sha256=8f5f788b45b96447517ff121f20841e6bfc95a5d7c4b48fdedb855d90f593144  # not flashed: bundles thwc,ufi001c + zhihe,various, but NOT handsome,openstick
+db410c_firmware=https://archive.org/download/dragonboard-410c-bootloader-emmc-linux-176/dragonboard-410c-bootloader-emmc-linux-176.zip
+db410c_firmware_sha256=a37c4e82a970ae2350fcfc7180559caf1dc3928e7c169316fe4ab899b7d305ad  # same value pinned by scripts/extract_fw.sh upstream; all 12 files match its MD5SUMS.txt
+db410c_firmware_stored=vendor/db410c-firmware/  # incl. prog_emmc_firehose_8916.mbn = the EDL programmer
+db410c_firmware_note=this board's tz is ALREADY byte-identical to DB410c's; sbl1/rpm are vendor (wingtech-desktop, RPM.BF.2.0.C3.2-00005). 6.12 boots without replacing them.
+pmos_kernel_v25_12=https://mirrors.ustc.edu.cn/postmarketos/v25.12/aarch64/linux-postmarketos-qcom-msm8916-6.12.1-r2.apk
+pmos_deviceinfo=device-generic-zhihe-kernel-ufi001c-3-r1 -> deviceinfo_dtb=qcom/msm8916-thwc-ufi001c, append_dtb=true, base 0x80000000 + kernel 0x00080000 (== this board's stock header)
+alpine_mirror=http://mirrors.aliyun.com/alpine/v3.24
+pmos_mirror=https://mirrors.ustc.edu.cn/postmarketos/v25.12
+wiki=https://wiki.nura.eco/wiki/Zhihe_series_LTE_dongles_(generic-zhihe)  # EDL button is the only button; UART is 3.3V on UFI103S/UFI001C(B)/UFI003
+github_asset_note=release assets (objects.githubusercontent.com) fail through proxy.sh here; mirrors ghfast.top / gh-proxy.com / ghproxy.net work, and ranged requests work direct

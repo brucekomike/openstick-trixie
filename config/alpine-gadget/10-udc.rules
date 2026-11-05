@@ -1,0 +1,3 @@
+# Invoked through /bin/sh so the script needs no exec bit: files injected into the image
+# with debugfs come out 0644, and this rule is the only thing that creates the gadget.
+ACTION=="add", SUBSYSTEM=="udc", RUN+="/bin/sh -c 'modprobe libcomposite 2>/dev/null; /bin/sh /usr/local/bin/setup_gadget.sh'"

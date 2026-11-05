@@ -6,7 +6,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONF="$ROOT/config"
 NOTES="$ROOT/notes"
-BACKUP="$ROOT/backup"
+# Both are overridable, and both have to be: this probe holds two boards whose backups are
+# NOT interchangeable (`backup/` = UFI001C, `backup-ufi103s/` = UFI103s). They answer adb as
+# the same 0123456789, so a hardcoded path here silently hands one board the other's boot
+# image, DTB and partition dumps. require_board below is what proves the pairing is right.
+BACKUP="${BACKUP:-$ROOT/backup}"
 OUT="$ROOT/out"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 
@@ -16,7 +20,7 @@ die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing host command: $1"; }
 
 # shellcheck source=/dev/null
-. "$CONF/board-ufi103s.env"
+. "${BOARD_ENV:-$CONF/board-ufi103s.env}"
 
 adb_cmd() {
   if [ -n "${ADB_SERIAL:-}" ]; then adb -s "$ADB_SERIAL" "$@"; else adb "$@"; fi
@@ -104,7 +108,66 @@ pull() {
 require_device() {
   command -v adb >/dev/null 2>&1 || die "missing host command: adb"
   adb_cmd get-state >/dev/null 2>&1 || die "device not reachable over adb (check 'adb devices', cable, and that it is not in fastboot)"
+  require_board
   log "device online: $(dev 'uname -n' | tr -d '\r')"
+}
+
+# --- board identity -------------------------------------------------------
+# Two physically different sticks in this probe answer adb as the same 0123456789 and can
+# both be attached at once, so no transport handle here is trusted to identify a board.
+# BOARD_TAG/BOARD_SERIALNO come from the sourced env; require_board checks them against
+# what the device actually reports, and every fastboot call is pinned to the serial.
+
+fb_resolve() {
+  [ -n "${FB:-}" ] && return 0
+  FB=${FASTBOOT:-$HOME/.local/bin/fastboot}
+  command -v "$FB" >/dev/null 2>&1 || FB=$(command -v fastboot || true)
+  [ -n "$FB" ] || die "no fastboot binary (see scripts/README: ~/.local/bin/fastboot from platform-tools)"
+}
+
+# fb <args...> - fastboot for THIS board. Without -s, fastboot takes whichever device it
+# finds and only complains when there are two, so a lone other-board unit sitting in
+# fastboot would happily accept this board's image.
+fb() {
+  fb_resolve
+  if [ -n "${BOARD_SERIALNO:-}" ]; then "$FB" -s "$BOARD_SERIALNO" "$@"; else "$FB" "$@"; fi
+}
+
+# fb_present - is this board (not merely some board) in fastboot?
+fb_present() {
+  fb_resolve
+  if [ -n "${BOARD_SERIALNO:-}" ]; then
+    timeout 10 "$FB" devices 2>/dev/null | grep -qE "^${BOARD_SERIALNO}[[:space:]]+fastboot"
+  else
+    timeout 10 "$FB" devices 2>/dev/null | grep -q fastboot
+  fi
+}
+
+require_board() {
+  [ -n "${BOARD_TAG:-}" ] ||
+    die "no BOARD_TAG in ${BOARD_ENV:-$CONF/board-ufi103s.env} - cannot tell the two sticks apart"
+  local live="" src="" sn=""
+  if adb_cmd get-state >/dev/null 2>&1; then
+    live=$(dev "tr '\\0' '\\n' < /proc/device-tree/model" | grep -oE 'UFI[A-Za-z0-9]+' | tail -1)
+    sn=$(dev "tr -d '\\0' < /proc/cmdline" | grep -oE 'androidboot\.serialno=[0-9a-f]+' | cut -d= -f2)
+    src="adb DT model${sn:+, serialno $sn}"
+    if [ -n "${BOARD_SERIALNO:-}" ] && [ -n "$sn" ] && [ "$sn" != "$BOARD_SERIALNO" ]; then
+      die "device serialno is $sn but this run is configured for $BOARD_SERIALNO - wrong stick plugged in"
+    fi
+  elif fb_present; then
+    live="$BOARD_TAG"; src="fastboot serial ${BOARD_SERIALNO:-unknown}"
+  fi
+  [ -n "$live" ] ||
+    die "cannot identify the board: no adb, and no fastboot device matching ${BOARD_SERIALNO:-<serial>}"
+  [ "${live,,}" = "${BOARD_TAG,,}" ] ||
+    die "live board is '$live' ($src) but this run is configured for '$BOARD_TAG' -
+       point BOARD_ENV= and BACKUP= at that board's files instead"
+  # A partition backup is per-unit, not per-model: prove this tree's boot image carries the tag.
+  if [ -s "$BACKUP/boot-stock.bin" ]; then
+    python3 "$ROOT/tools/bootimg.py" info "$BACKUP/boot-stock.bin" 2>/dev/null | grep -qi "$BOARD_TAG" ||
+      die "$BACKUP/boot-stock.bin does not mention $BOARD_TAG - that is another board's backup"
+  fi
+  log "board: $live ($src); backup tree $BACKUP"
 }
 
 # run <cmd...>  - host command, printed first, executed only with COMMIT=1
@@ -128,4 +191,32 @@ require_backup() {
 # this check, so ask for an explicit block size instead of guessing at the unit suffix.
 dev_avail_mb() {
   dev "df -P --block-size=1M / | awk 'NR==2{print \$4}'" | tr -dc '0-9'
+}
+
+# detect_gadget_if - set HOST_GADGET_IF/HOST_GADGET_IP from the live host, not from the env
+# file. The USB gadget netdev is re-created with a fresh name and a fresh DHCP lease on every
+# replug, so the recorded value goes stale the moment the stick is unplugged; acting on it
+# prints sudo lines that NAT the wrong interface and leaves the stick with no internet.
+# Returns non-zero (leaving the env values in place) when no such interface exists yet.
+detect_gadget_if() {
+  local pre found ip
+  pre="${STICK_GADGET_NET%/*}"; pre="${pre%.*}."          # 10.42.0.0/24 -> 10.42.0.
+  # index() rather than a regex: awk unescapes `-v` values, so a hand-escaped "\." arrives as
+  # a plain "." (and warns about it), silently turning an exact prefix test into a wildcard.
+  found=$(ip -o -4 addr show 2>/dev/null |
+    awk -v p="$pre" '$2 != "lo" && index($4, p) == 1 {print $2; exit}')
+  [ -n "$found" ] || return 1
+  ip=$(ip -o -4 addr show "$found" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+  [ -n "$ip" ] || return 1
+  HOST_GADGET_IF="$found"
+  HOST_GADGET_IP="$ip"
+}
+
+# check_uplink_if - warn when the env's uplink is not the one carrying the default route.
+check_uplink_if() {
+  local live
+  live=$(ip -o -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+  [ -n "$live" ] && [ "$live" != "$HOST_UPLINK_IF" ] &&
+    warn "HOST_UPLINK_IF=$HOST_UPLINK_IF but the default route is on $live - NAT the latter"
+  return 0
 }

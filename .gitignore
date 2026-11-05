@@ -1,5 +1,6 @@
 # Generated state and vendored upstream - none of it belongs in git.
 /backup/
+/backup-ufi103s/
 /notes/
 /out/
 /vendor/
