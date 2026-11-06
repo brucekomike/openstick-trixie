@@ -48,12 +48,18 @@ gadget_iface() {
 # Resolvers to hand the host: the ones the uplink was given. /etc/resolv.conf on this image
 # points at the stick itself (that is what the host is told to ask), so it cannot be the
 # source - NM writes the real per-connection servers to its own file.
+#
+# The output must be `nameserver <ip>` lines, not bare addresses. $DNS_FILE is handed to dnsmasq
+# as --resolv-file, which is parsed in resolv.conf format; measured on the UFI103s, bare IPs gave
+# dnsmasq ZERO upstream servers and it answered every query with REFUSED - while
+# `nat-share.sh status` printed the two resolvers it had written and port 53 was open, so both
+# checks that looked like proof of health were worthless. Only resolving a name means anything.
 collect_dns() {
   mkdir -p "$DNS_DIR"
   {
     sed -n 's/^nameserver \([0-9.]\{7,\}\).*/\1/p' /run/NetworkManager/resolv.conf 2>/dev/null || true
     sed -n 's/^nameserver \([0-9.]\{7,\}\).*/\1/p' /etc/resolv.conf 2>/dev/null || true
-  } | grep -v "^$GADGET_GW$" | sort -u > "$DNS_FILE" 2>/dev/null || true
+  } | grep -v "^$GADGET_GW$" | sort -u | sed 's/^/nameserver /' > "$DNS_FILE" 2>/dev/null || true
 }
 
 teardown() {

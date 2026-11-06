@@ -69,9 +69,14 @@ adb -s <serial-103s> push config/alpine-gadget/nat-share.sh /usr/local/bin/nat-s
 adb -s <serial-103s> shell 'chmod 755 /usr/local/bin/nat-share.sh; /usr/local/bin/nat-share.sh status'
 ```
 
-The UFI001C was reflashed with the fixed build and verified: after a reboot with forwarding off
-and no rules, the image reconnected Wi-Fi, set `ip_forward=1`, installed
-`-o wlan0` MASQUERADE and made dnsmasq answer DNS on its own.
+The UFI001C was reflashed with the fixed build and verified for NAT: after a reboot with
+forwarding off and no rules, the image reconnected Wi-Fi, set `ip_forward=1` and installed
+`-o wlan0` MASQUERADE by itself. It did **not** verify DNS, and DNS was broken: `collect_dns()`
+wrote bare IPs into the file dnsmasq reads as `--resolv-file`, which expects `nameserver <ip>`
+lines, so dnsmasq had no upstreams and answered `REFUSED` — while `nat-share.sh status` listed
+resolvers and port 53 was open. Fixed after the fact; the resolution proof is
+`nslookup ossmedia.cn 192.168.5.1` returning an answer. Both boards' flashed rootfses from
+before that fix carry the bad writer, so both need the one-file push above, not just this unit.
 
 ## 2. The download doors, measured here
 

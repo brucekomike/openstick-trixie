@@ -214,6 +214,14 @@ class FlashPackTest(unittest.TestCase):
         rules = log.read_text() if log.exists() else ""
         self.assertIn("-o wlan0", rules, f"MASQUERADE did not use the interface:\n{rules}")
         self.assertNotIn("-o 192.168.24.1", rules, "NAT rule was keyed on the GATEWAY - matches nothing")
+        # The other silent failure: dnsmasq parses --resolv-file in resolv.conf format, so bare
+        # IPs mean it starts with no servers and answers REFUSED while everything else looks
+        # healthy. Assert the file format, not just that something was written.
+        dnsfile = Path(tmp) / "dns" / "upstream-dns"
+        if dnsfile.exists() and dnsfile.read_text().strip():
+            for line in dnsfile.read_text().splitlines():
+                self.assertRegex(line, r"^nameserver [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$",
+                                 f"$DNS_FILE line is not resolv.conf format: {line!r}")
 
     def test_pack_scripts_parse(self):
         for f in (FLASH, RESTORE, BUILDER):
