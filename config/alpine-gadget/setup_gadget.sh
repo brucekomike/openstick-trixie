@@ -31,8 +31,8 @@ ADBD="${ADBD:-/usr/local/sbin/adbd}"
 FFS_DIR="${FFS_DIR:-/dev/usb-ffs/adb}"
 ADBD_LOG="${ADBD_LOG:-/var/log/adbd.log}"
 
-# The adb serial is this board's own: /proc/device-tree/serial-number is the eMMC serial
-# (<serial-001c> on the UFI001C). Upstream's hardcoded "fedcba9876543210" makes every board
+# The adb serial is this board's own: /proc/device-tree/serial-number is the eMMC serial, which
+# is unique per unit. Upstream's hardcoded "fedcba9876543210" makes every board
 # flashed from this image answer `adb devices` identically - the same ambiguity that cost
 # a whole session on the vendor images, where both sticks report the placeholder 0123456789.
 SERIAL="${SERIAL:-$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null)}"

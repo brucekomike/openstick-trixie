@@ -4,6 +4,14 @@ Everything here was **measured on this unit on 2026-11-05**, not copied from a v
 from the notes for the other stick in this probe. Where a claim corrects something this repo
 already said, the correction is called out explicitly.
 
+> **Per-unit identifiers are redacted.** `<serial-001c>` / `<serial-103s>` stand in for each
+> board's eMMC serial (readable as `/proc/device-tree/serial-number`, and as
+> `androidboot.serialno=` on the vendor kernel), and `<redacted>` for the modem IMEI. Substitute
+> your own board's values in `config/board-*.env`; they are also what `adb devices` and
+> `fastboot devices` print, so the commands below read the same once you do. Everything else —
+> partition hashes, DTB digests, the root PARTUUID, the gadget MACs (which are upstream's own
+> defaults, not this unit's) — is real and reproducible.
+
 **Current state: Alpine Linux v3.24.2 on mainline kernel `6.12.1-msm8916`**, booted by the
 community `lk1st` in `aboot` from an ext2 `boot` partition with `extlinux.conf`. Wi-Fi associated,
 Bluetooth `hci0` present, **LTE modem fully probed** (IMEI read, all bands enumerated — only
@@ -57,7 +65,7 @@ build unless the DTB it unpacked from `backup/boot-stock.bin` matches the *live*
 | cmdline | `earlycon root=PARTUUID=a7ab80e8-… console=ttyMSM0,115200 no_framebuffer=true rw rootwait` |
 | Wi-Fi | WCNSS over SMD: `remoteproc a204000` up, `WCNSS Version 1.5 1.2`, `wlan0` client-associated, `phy0` in rfkill |
 | Bluetooth | `hci0` present via `btqcomsmd`/`btqca`, not soft/hard blocked |
-| LTE modem | **works**: `remoteproc 4080000` running, `MBA booted … loading mpss`, IMEI `<redacted>`, fw `UFI001CT 20211106`, ports `wwan0(net) wwan0at0/1(at) wwan0qmi0(qmi)`; `state: failed / failed reason: sim-missing` = no SIM inserted |
+| LTE modem | **works**: `remoteproc 4080000` running, `MBA booted … loading mpss`, IMEI read (`<redacted>`), fw `UFI001CT 20211106`, ports `wwan0(net) wwan0at0/1(at) wwan0qmi0(qmi)`; `state: failed / failed reason: sim-missing` = no SIM inserted |
 | USB | device-side gadget only; host sees `1d6b:0104` (NCM+ACM) under Linux, `18d1:d00d` in fastboot, `05c6:9008` in EDL |
 
 GPT by partition label (`/dev/disk/by-partlabel`):
