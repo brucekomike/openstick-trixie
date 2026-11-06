@@ -30,25 +30,33 @@ Written and **read back byte-identical over EDL** on 2026-11-06:
 | `aboot` | community lk1st, `vendor/openstick-alpine-v0.2/aboot.mbn` | `441d314b452d` | 322,540 |
 | `hyp` | matching `hyp.mbn` | `c6414843b635` | 10,424 |
 | `boot` | `out/boot-mainline-ufi103s.img` — ext2 + `extlinux.conf`, 6.12.1-msm8916 | `2cfc31c91674` | 67,108,864 |
-| `rootfs` | `out/alpine-rootfs-ufi103s.img` — Alpine 3.24.2, cross-built offline | `b69bf38eef34` | 939,524,096 |
+| `rootfs` | `out/alpine-rootfs-ufi103s.img` — Alpine 3.24.2, v0.1 minimal toolset, cross-built offline | `21bede77989c` | 939,524,096 |
 
 Never written: `sbl1`, `rpm`, `tz`, and every calibration partition (`modemst1/2`, `fsg`, `fsc`,
 `sec`, `cdt`, `devinfo`). The factory images for `aboot`/`hyp`/`sbl1`/`rpm`/`tz`/`boot` are in
 `backup-ufi103s/part-*.bin` + `boot-stock.bin` and also inside this board's pack under `restore/`;
 `backup-ufi103s/MANIFEST.sha256` verifies (20 entries).
 
-**Not yet proven: that it boots.** `edl reset --resetmode=reboot` on this unit re-enumerates the
-device as `05c6:9008` — a warm reset straight back into download mode, not a cold boot — so the
-new chain has never actually run. Until someone unplugs it for 5 s and plugs it back in **without
-the button**, everything below §2 about behaviour is inference from the UFI001C, not measurement
-here. What the outcome will mean:
+**It boots, and the boot path is measured.** `edl reset --resetmode=reboot` on this unit is a
+*warm* reset that re-enumerates as `05c6:9008` — it never attempts a boot, which is why the first
+"did it come up?" check misled me into reading another stick's presence as this board's success.
+`--resetmode=reset` does cold-boot it. What has since been observed, on this board:
 
-| on replug | conclusion |
+| check | result |
 |---|---|
-| `1d6b:0104` + adb serial `<serial-103s>` | booted; then `resize2fs /dev/disk/by-partlabel/rootfs` (the image is 896 MiB in a 3.3 GiB partition) |
-| `18d1:d00d` fastboot | community aboot ran but could not start the ext2 image → suspect the default DTB (§4) |
-| `05c6:9008` with no button held | failure before the aboot handoff → restore `aboot`+`hyp` from `restore/` and re-approach |
-| nothing | Linux is up with no gadget; a UART on `ttyMSM0` becomes mandatory — do not keep guessing at 64 MB a reflash |
+| boot chain after the swap | `6.12.1-msm8916`, model `ufi-001c/ufi-001b 4G Modem Stick` — i.e. the community **thwc** DTB is what the default label loads, so §4's unresolved DTB question is live, not theoretical |
+| v0.1 rootfs, rung 1 via fastboot | gadget up at **~8 s**, `adb -s <serial-103s> shell` → `uid=0(root)` |
+| the broken rootfs (with `metadata_csum_seed`) | 150 s of no USB at all — the failure mode §6a describes, seen firsthand |
+| Wi-Fi out of the box | `nmcli -t device` → `wlan0:wifi:disconnected:` (managed), plugin present in the image, `wpa_supplicant` in the boot runlevel. **Joining a network is still unverified** — it needs the owner's SSID/PSK |
+| ssh out of the box | `dropbear` **not** in the default runlevel, as intended; `networking` now starts (the missing `/etc/network/interfaces` was the old cause) |
+| toolset | `ssh`/`scp`/`ssh-keygen`/`nano` present; `nmap`/`tcpdump` absent — correct for `minimal`; `full` is the 0.2 set |
+| uplink share to host | `nat-share.sh` + the NM dispatcher hook present, and it correctly does nothing with no default route. **End-to-end internet through the stick is not yet verified** |
+| clock | `uptime -s` → 1970-01-01 until chrony gets an uplink: no RTC, as documented |
+
+Still not observed on this unit: LTE registration (no SIM: `failed reason: sim-missing` at the
+QMI level, while MBA+MPSS load and ModemManager sees a `gsm` device), either SIM slot, whether
+the stock `handsome` DTB boots under mainline at all, and the rootfs expansion in §8.
+
 
 ## 2. The download doors, measured here
 
