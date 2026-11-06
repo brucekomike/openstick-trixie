@@ -173,6 +173,48 @@ class FlashPackTest(unittest.TestCase):
         missing = [t for t in tokens if f"|@{t}@|" not in sed]
         self.assertEqual(missing, [], f"INSTALL.md.in tokens with no sed rule in 80: {missing}")
 
+    # ------------------------------------------------------- nat-share picks the interface
+    def test_nat_share_masquerades_the_interface_not_the_gateway(self):
+        """`default via X dev Y` - Y is the outgoing interface, X is not.
+
+        iptables happily accepts `-o 192.168.24.1`. The rule is installed, the counters stay
+        at zero and the client just has no internet - measured on a MacBook behind a UFI001C,
+        where the first version of uplink() returned field 3 of `ip -4 route show default`.
+        """
+        import shutil
+        tmp = Path(self._tmp.name) / "nat"
+        bindir = tmp / "bin"
+        bindir.mkdir(parents=True)
+        (tmp / "sys").mkdir()
+        (tmp / "sys" / "usb0").mkdir()
+        stubs = {
+            "ip": '#!/bin/sh\n'
+                  'case "$*" in\n'
+                  '  *route*) echo "default via 192.168.24.1 dev wlan0 proto dhcp src 192.168.24.162 metric 600";;\n'
+                  '  *) echo "3: usb0    inet 192.168.5.1/24 scope global usb0";;\n'
+                  'esac\n',
+            "iptables": '#!/bin/sh\nif [ "$1" = "-t" ]; then echo "$@" >> "$IPTLOG"; fi\nexit 0\n',
+            "sysctl": '#!/bin/sh\nexit 0\n',
+            "pidof": '#!/bin/sh\nexit 1\n',
+        }
+        for name, body in stubs.items():
+            p = bindir / name
+            p.write_text(body)
+            os.chmod(p, 0o755)
+        log = tmp / "iptables.log"
+        env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}", IPTLOG=str(log),
+                   DNS_DIR=str(tmp / "dns"), LOG=str(tmp / "nat.log"),
+                   GADGET_NET="192.168.5.0/24", GADGET_GW="192.168.5.1")
+        # /sys/class/net is read by gadget_iface(), which a test cannot create; the name
+        # fallback (usb0/ncm0/ecm0) is what this stub exercises, and it is the same one the
+        # vendor-kernel and mainline paths differ across.
+        r = subprocess.run(["sh", str(ROOT / "config" / "alpine-gadget" / "nat-share.sh"), "apply"],
+                           capture_output=True, text=True, env=env, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        rules = log.read_text() if log.exists() else ""
+        self.assertIn("-o wlan0", rules, f"MASQUERADE did not use the interface:\n{rules}")
+        self.assertNotIn("-o 192.168.24.1", rules, "NAT rule was keyed on the GATEWAY - matches nothing")
+
     def test_pack_scripts_parse(self):
         for f in (FLASH, RESTORE, BUILDER):
             r = subprocess.run(["bash", "-n", str(f)], capture_output=True, text=True)

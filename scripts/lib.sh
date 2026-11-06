@@ -206,6 +206,18 @@ require_board() {
         warn "BOARD_SERIALNO is unset and no UFIxxx tag is in the DT model - cannot prove
        which board is plugged in. Set BOARD_SERIALNO (see config/board-*.env) to enable it."
       fi
+      # The hole worth naming: a flashed board running the community thwc DTB reports model
+      # "ufi-001c/ufi-001b 4G Modem Stick" whatever board it physically is - measured on the
+      # UFI103s, which printed exactly that while running 6.12. awk takes the first match, so a
+      # UFI103S in that state *satisfies* a UFI001C configuration instead of failing it, and the
+      # backup cross-check below cannot catch it either (the 001C's own boot-stock.bin does
+      # mention UFI001C). Only a serial distinguishes them; say so rather than implying proof.
+      case "$model" in
+        *[Uu][Ff][Ii]-?001*[Cc]*)
+          warn "the live DT model is the community family string ($model), which names more
+       than one board - matching it does NOT prove which stick is attached. Set
+       BOARD_SERIALNO= (or pin with fastboot -s) for an identity that means something." ;;
+      esac
     fi
   elif fb_present; then
     live="$BOARD_TAG"; src="fastboot serial ${BOARD_SERIALNO:-unknown}"

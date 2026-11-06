@@ -35,8 +35,21 @@ ADBD_LOG="${ADBD_LOG:-/var/log/adbd.log}"
 # is unique per unit. Upstream's hardcoded "fedcba9876543210" makes every board
 # flashed from this image answer `adb devices` identically - the same ambiguity that cost
 # a whole session on the vendor images, where both sticks report the placeholder 0123456789.
+#
+# Measured 2026-11-06 on a UFI001C under mainline: /proc/device-tree/serial-number IS readable
+# (it returns the eMMC serial) while androidboot.serialno is absent entirely - that tag is only
+# appended by the vendor boot chain. So the property is the right source on both kernels.
+#
+# If the read ever fails, falling back silently would hand every board the same serial, which
+# is the one thing that makes two sticks in a drawer indistinguishable. Say so, loudly, where
+# the operator will see it.
 SERIAL="${SERIAL:-$(tr -d '\0' < /proc/device-tree/serial-number 2>/dev/null)}"
-[ -n "$SERIAL" ] || SERIAL=fedcba9876543210
+if [ -z "$SERIAL" ]; then
+  SERIAL=fedcba9876543210
+  echo "gadget: WARNING no per-unit serial readable; adb will report this board as" \
+       "$SERIAL - the same as any other stick that could not read one" >&2
+  echo "gadget: WARNING fallback adb serial in use, boards are not distinguishable" >/dev/kmsg 2>/dev/null || true
+fi
 
 mkdir -p "${CFGFS}/${GADGET_NAME}"
 cd "${CFGFS}/${GADGET_NAME}"

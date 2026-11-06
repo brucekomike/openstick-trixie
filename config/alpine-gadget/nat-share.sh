@@ -25,7 +25,15 @@ log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >> "$LOG" 2>/dev/null || 
 
 # The interface carrying the default route. "Connected" is not enough - a Wi-Fi network
 # without a gateway must not capture the share.
-uplink() { ip -4 route show default 2>/dev/null | awk '$1=="default"{print $3; exit}'; }
+#
+# Take the word after `dev`, not field 3. `ip -4 route show default` prints
+#   default via 192.168.24.1 dev wlan0 proto dhcp src 192.168.24.162 metric 600
+# so field 3 is the GATEWAY, and the first version of this function returned it as the
+# interface - producing `-o 192.168.24.1`, a rule iptables accepts and that matches nothing.
+# NAT then silently does not happen, which is exactly the kind of failure that looks like a
+# success. The `dev` scan also handles an on-link default ("default dev wlan0 ...") with no
+# gateway at all. Measured 2026-11-06 while debugging a MacBook that got a lease and no route.
+uplink() { ip -4 route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1; }
 
 gadget_iface() {
   for cand in usb0 ncm0 ecm0; do
