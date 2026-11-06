@@ -1,16 +1,32 @@
-# OpenStick UFI103s → Debian 13 (trixie) toolchain
+# OpenStick → Alpine / Debian 13 toolchain for the Handsome MSM8916 sticks
 
-> **Two boards answer the same adb serial.** Everything below was measured on the stick whose DT
-> model says *UFI103s*, which is still stock (vendor 5.15 + Debian 11). A second unit (*UFI001C*,
-> `androidboot.serialno=<serial-001c>`) is the one that has actually been reflashed and now runs
-> **Alpine v3.24 + mainline `6.12.1-msm8916`**; it differs where it matters — its *factory* aboot
-> had no `extlinux` support (replaced by the community one), its DTB is different, and its LTE
-> modem only probes under the community DTB, not the stock one. Read
-> **[`BOARD-ufi001c.md`](BOARD-ufi001c.md)** first — `adb devices` shows the identical
-> `0123456789` for both, so nothing else in this repo tells you which board is plugged in.
-> Every script takes `BACKUP=` and `BOARD_ENV=` for that reason, and `require_board` in
-> `scripts/lib.sh` refuses to run when the live device, the env file and the backup tree
-> disagree. This stick's tree is `backup-ufi103s/`; `backup/` is the UFI001C's.
+> **This project supports both boards, as separate targets.** `adb devices` shows the identical
+> `0123456789` for both, so nothing in the transport tells you which stick is plugged in — each
+> board has its own env file, backup tree, build artifacts and flash pack, and every script picks
+> them by `BOARD_ENV=`/`BACKUP=`. `require_board` in `scripts/lib.sh` refuses to run when the live
+> device, the env file and the backup tree disagree, and `scripts/78-flash-over-edl.sh` refuses to
+> write over EDL at all until it has read the board's own `boot` partition and matched the model
+> string in it.
+>
+> | | UFI103s | UFI001C |
+> |---|---|---|
+> | board file | **[`BOARD-ufi103s.md`](BOARD-ufi103s.md)** | **[`BOARD-ufi001c.md`](BOARD-ufi001c.md)** |
+> | env | `config/board-ufi103s.env` (default) | `config/board-ufi001c.env` |
+> | backup tree | `backup-ufi103s/` | `backup/` |
+> | DTB (stock) | `2730cc4bae81…` | `33cad00d7e84…` |
+> | how its images were built | `53-build-alpine-cross.sh` (offline, host container — its Wi-Fi will not associate) | `54-build-alpine-onstick.sh` (native, on the stick) |
+> | artifacts | `out/*-ufi103s.img`, `out/cross-ufi103s/` | `out/alpine-rootfs.img`, `out/boot-mainline.img` |
+> | flash pack | `out/flashpack/openstick-flashpack-ufi103s-*` | `out/flashpack/openstick-flashpack-ufi001c-*` |
+> | state | community `aboot`+`hyp`, 6.12 `boot`, Alpine `rootfs` — all written and read back byte-exact over EDL; **first cold boot not yet observed** | runs Alpine v3.24 + mainline `6.12.1-msm8916`, boot chain proven |
+>
+> They differ where it matters: different DTB, different per-unit serial, different download-door
+> behaviour (see §2 of the board files), and the UFI001C's LTE only probes under the community DTB.
+> Read the board file for the unit in front of you before flashing anything.
+
+**Repo version: [`VERSION`](VERSION) — `v0.1`**, and every flash pack carries it in its
+directory name (`openstick-flashpack-<board>-v0.1-<kernel>-<toolset>-<date>`) so a published
+artifact says which release and which toolset it is. `minimal` / `full` are the two toolsets
+described in the feature list below; they are not versions.
 
 Prepares the Debian 13 route for the MSM8916 / Snapdragon 410C-class stick that shows up
 on adb as `0123456789` (`occam/Nexus_4/mako` placeholder strings). Nothing here writes to
@@ -89,6 +105,7 @@ Countermeasures in this repo:
 | `scripts/40-inplace-upgrade.sh` | **route A**: preflight, then stage bookworm/trixie with the kernel held and the fallback unit installed |
 | `scripts/50-build-rootfs.sh` | **route B**: docker/debootstrap trixie rootfs + firmware + 5.15 modules + gadget unit → `out/rootfs-trixie.img` |
 | `scripts/54-build-alpine-onstick.sh` | **route D**: build Alpine natively *on the stick* (no qemu/binfmt/host sudo), pull `out/alpine-{rootfs,boot}.img`; refuses to build unless the backup's DTB matches the live model tag |
+| `scripts/53-build-alpine-cross.sh` | the same build, **cross** in a container, for a stick with no internet: stages `/lib/firmware`, the 5.15 modules, `/boot` and the stock DTB out of `backup-<board>/`, runs `device/alpine-onstick.sh` unchanged under arm64 emulation, and refuses images with ext4 features the vendor kernel cannot mount |
 | `scripts/55-patch-alpine-image.sh` | patch a built image with debugfs before flashing: configfs gadget, ACM console, and the adb payload; refuses an image without `gcompat` |
 | `scripts/60-build-bootimg.sh` | `info`/`unpack`/`repack` the Android boot image (`tools/bootimg.py`, stdlib only) |
 | `scripts/66-make-extlinux-boot.sh` | **superseded by `68-`** — the factory aboot has no extlinux parser at all, so this image cannot boot without the aboot swap |
@@ -96,13 +113,83 @@ Countermeasures in this repo:
 | `scripts/70-flash.sh` | the only partition writer; dry-run by default; refuses calibration labels |
 | `scripts/72-enter-fastboot.sh` | get into fastboot from a running system with no hands: `reboot(2)` `RESTART2 "bootloader"` over ssh (~4 s) |
 | `scripts/74-flash-mainline-bootchain.sh` | `status`/`aboot`/`boot`/`all`/`restore` — flash the community `aboot`+`hyp`, then the ext2 boot image; `restore` returns every partition it can write to factory |
+| `scripts/78-flash-over-edl.sh` | `status`/`w`/`verify`/`reboot` over EDL (Sahara + the db410c firehose): the door that works when the installed userspace does not boot, and the only one that can **read a partition back** to prove a write. Identifies the board from its own `boot` partition, since QDL mode has no serial |
 | `scripts/76-fetch-adbd-payload.sh` | assemble + verify `out/adbd-payload/` (vendor `adbd` + `libcrypto.so.1.1`), the three files that give a musl rootfs a root `adb shell` |
+| `scripts/80-build-flashpack.sh` | assemble `out/flashpack/`: a self-contained install pack (images + `flash.sh` + `restore.sh` + `MANIFEST.sha256` + `INSTALL.md`) that needs nothing from this repo on the flashing host; `--build` reruns 54/76/55/68 first, `--tar` emits a `.tar.zst` |
 | `scripts/90-restore.sh` | `verify` / restore `boot` / guarded rootfs paths |
 
 `make help` lists the same thing. Every script also takes `BACKUP=` and `BOARD_ENV=`, because the two
 boards' partition dumps are not interchangeable — `scripts/lib.sh`'s `require_board` refuses to run
 when the live DT model, the env file and the backup tree disagree, and pins every fastboot call to
 that board's serial.
+
+## Feature list
+
+Availability = measured on real hardware with a fresh build. Default = true after flashing, with
+nothing run by hand.
+
+| feature | availability | default |
+|---|---|---|
+| serial console over USB (`/dev/ttyACM0` → root shell) | ✓ | default |
+| `adbd` (root `adb shell`, push/pull) | ✓ | default |
+| NCM gadget link + DHCP to the host (`192.168.5.1`) | ✓ | default |
+| DNS for the host (dnsmasq on the gadget link) | ✓ | default |
+| share the stick's uplink with the host (NAT) | ✓ | default |
+| `dropbear` ssh on the gadget link (`ssh user@192.168.5.1`) | ✓ (was broken: see notes) | **not default** — opt in |
+| ssh **client** on the stick (`ssh`/`scp`/`ssh-keygen` out) | ✓ Alpine, ✓ Debian route (was missing there) | default (minimal toolset) |
+| Wi-Fi station (`wlan0`) | ✓ (was broken: see notes) | default service, no saved network |
+| Wi-Fi hotspot AP (`Openstick`) | ✓ | **not default** (`autoconnect=false`) |
+| network tools: `nmap`/`ncat`, `tcpdump`, `dig`/`host`/`delv`, `iperf3`, `mtr`, `traceroute`, `whois`, `socat`, `nc`, `ping`/`tracepath` | ✓ in the **full** toolset | `make alpine-full` / `make alpine-cross-full`; **not in the minimal image** |
+| LTE modem (`wwan0` via QMI, ModemManager) | ✓ probed, `sim-missing` | default |
+| `chrony` time sync | ✓ | default (no RTC battery: clock starts at 1970) |
+| mainline `6.12.1-msm8916` + community aboot | ✓ | default |
+| this unit's own stock DTB / vendor 5.15 as boot labels | ✓ present on `/boot` | not the default label |
+| `resize2fs` to the full 3.3 GiB partition | unexplained, do not rely on it | run it yourself |
+
+Toggle anything on the stick with:
+
+```sh
+rc-update add dropbear default && rc-service dropbear start     # ssh door
+nmcli connection up hotspot                                     # Wi-Fi AP instead of client
+nmcli device wifi connect "<SSID>" password "<PSK>"             # your network, this device only
+```
+
+Three things behind those rows were **broken on both boards** until this build, and are worth
+knowing because they are silent:
+
+* **ssh never came up.** A CI/minirootfs image has no `/etc/network/interfaces`, so OpenRC
+  `networking` fails (`ifquery: could not parse`), and dropbear — which `need net` — could never
+  start. Port 22 was not listening on either unit while this repo documented ssh as an admin door.
+* **Wi-Fi looked fine and was not.** `wcn36xx` binds, `iw phy0 info` lists `managed` mode and
+  `iw dev wlan0 scan` returns BSSes, yet `nmcli device status` sat on `unavailable` forever:
+  `networkmanager-wifi` (the device plugin) was missing from the package list, and separately
+  NM cannot D-Bus-*activate* `wpa_supplicant` on OpenRC — the supplicant has to be running.
+* **the host was given a DNS server that did not answer.** `gadget-net-up.sh` handed out
+  `--dhcp-option=6,192.168.5.1` while starting dnsmasq with `--port=0`. The laptop got a lease, a
+  route and a nameserver that never replied.
+
+Login reality, since it differs from the old docs: **`root` is locked**; the account is `user` with
+the builder's default password and passwordless sudo. `passwd user` before joining any network you
+do not own. `adb exec-out` is answered with `error: closed` by this daemon — `adb shell` for text,
+`adb push`/`pull` for bytes.
+
+### Details behind each row
+
+| capability | availability | enabled by default | how it was checked / how to use |
+|---|---|---|---|
+| `adb shell` as root over the gadget | ✓ | ✓ | `adb -s <serial> shell id` → `uid=0(root)`. The vendor `adbd` (glibc) runs on musl through `gcompat`. |
+| USB serial console, no disassembly | ✓ | ✓ | host sees `/dev/ttyACM0`; `ttyGS0::respawn:/bin/sh` in `/etc/inittab` gives a passwordless root shell — the door that survives both a broken gadget network and a broken network config. |
+| ssh over the NCM link | ✓ (was broken) | **not default** | Port 22 was never listening on either unit (notes above). Opt in with the two commands below. |
+| Wi-Fi station | ✓ (was broken) | service on, no saved network | `nmcli device wifi list` returns real SSIDs with signal after this build. Credentials are per-device and never baked into a released image. |
+| Wi-Fi hotspot AP (`Openstick`, 192.168.4.1) | ✓ | not default | `hotspot.nmconnection` ships with `autoconnect=false` so the stick joins your network instead of broadcasting one. |
+| LTE modem (QMI `wwan0`) | ✓ probed, `sim-missing` | ✓ | MBA + MPSS load, `remoteproc1 … is now up`, ModemManager enumerates a `gsm` device with LTE bands. Registration on a live network is **not** verified — no SIM in this unit. |
+| Shares its uplink with the host | ✓ new | ✓ | Whoever holds the default route gets MASQUERADE + FORWARD + `ip_forward=1`, and dnsmasq starts answering DNS with that uplink's resolvers. No uplink → forwarding stays off. Inspect with `nat-share.sh status`. |
+| Host gets an address with no configuration | ✓ | ✓ | dnsmasq DHCP 192.168.5.20-60 on the gadget iface, started from `/etc/inittab` — no dbus, no NetworkManager, so the admin door does not inherit the network stack's failures. |
+| Switch kernel or DTB without reflashing | ✓ | — | `/boot` is a real ext2 partition with `extlinux.conf` (community DTB), `extlinux-handsome.conf` (this unit's own) and `extlinux-5.15.conf` (vendor kernel + Debian initrd). fstab marks it `noauto`, so `mount /boot` first. |
+| Boot chain back to factory | ✓ | — | `restore/` in each pack holds that unit's own `aboot/hyp/sbl1/rpm/tz/boot`. There is no factory image of the userspace — no raw rootfs dump was ever taken. |
+| Verify a write without booting it | EDL only | — | Neither aboot implements `fastboot fetch`. `scripts/78-flash-over-edl.sh verify` hashes the partition off the eMMC against the source image; every write in this session was confirmed that way. |
+| Clock correct at boot | ✗ by design | — | No RTC battery: time starts at the epoch and `chrony` fixes it once an uplink exists, so early logs read 1970/Jan-01. |
+| Rootfs already fills the 3.3 GiB partition | observed, cause unidentified | — | The image is 896 MiB; after first boot `tune2fs` reported the whole partition, with no `resize2fs` caller in the image and no online-resize line in the kernel log. Treated as luck, not a feature — run `resize2fs /dev/disk/by-partlabel/rootfs` yourself. |
 
 ## Alternative distro: Alpine
 
@@ -113,6 +200,58 @@ lockstep with the Debian branch and is the lighter, better-kernel-maintained opt
 the **destructive** route — lk2nd + a rewritten GPT + a non-Android ext2 boot partition — so it
 cannot be attempted the way route A can. Same unresolved DTB problem for `handsome,openstick`,
 which the extracted `out/bootimg/dtb0.dtb` is the asset for.
+
+## Flashing what you built
+
+Two doors, and which one you have depends on whether the stick still boots. Both are measured
+on this unit; neither needs root on the host (you need `plugdev` for fastboot/EDL and `docker`
+for the cross build).
+
+| | the stick boots | the stick does not boot |
+|---|---|---|
+| door | fastboot (`adb reboot bootloader`, ~3 s) | EDL — hold the button **while plugging in** |
+| tool | the pack's `flash.sh` | `scripts/78-flash-over-edl.sh` |
+| can verify a write by reading it back | **no** (`fastboot fetch` is unimplemented on both aboots) | **yes** (`78- verify`, hashes against the source image) |
+| can identify which board it is talking to | yes (fastboot reports the eMMC serial) | **no** — 05c6:9008 carries no serial, so `78-` reads the model string out of the board's own `boot` partition and refuses to write otherwise |
+
+```sh
+# 1. build (host, no stick internet needed)
+COMMIT=1 TOOLSET=minimal scripts/53-build-alpine-cross.sh          # or make alpine-cross-minimal
+scripts/55-patch-alpine-image.sh out/alpine-rootfs-ufi103s.img     # gadget, adb, toolset gates
+scripts/68-make-mainline-boot.sh OUT_IMG=out/boot-mainline-ufi103s.img \
+    DTB_ALT=out/cross-ufi103s/bootimg/dtb0.dtb                     # this unit's own stock DTB
+scripts/80-build-flashpack.sh                                       # -> out/flashpack/<board>-v0.1-...
+
+# 2a. fastboot ladder (board boots today)
+adb -s 0123456789 reboot bootloader
+cd out/flashpack/openstick-flashpack-ufi103s-v0.1-6.12.1-msm8916-minimal-*
+COMMIT=1 I_WIPE_ROOTFS=yes SERIAL=<serial-103s> ./flash.sh
+
+# 2b. EDL (board does not boot, or you want read-back verification)
+COMMIT=1 I_WIPE_ROOTFS=yes scripts/78-flash-over-edl.sh w rootfs out/alpine-rootfs-ufi103s.img
+COMMIT=1 scripts/78-flash-over-edl.sh w aboot vendor/openstick-alpine-v0.2/aboot.mbn
+COMMIT=1 scripts/78-flash-over-edl.sh w hyp   vendor/openstick-alpine-v0.2/hyp.mbn
+COMMIT=1 scripts/78-flash-over-edl.sh w boot  out/boot-mainline-ufi103s.img
+# read each one back and hash it against the source - the verification fastboot cannot give
+scripts/78-flash-over-edl.sh verify rootfs out/alpine-rootfs-ufi103s.img
+scripts/78-flash-over-edl.sh verify aboot   vendor/openstick-alpine-v0.2/aboot.mbn
+scripts/78-flash-over-edl.sh verify hyp     vendor/openstick-alpine-v0.2/hyp.mbn
+scripts/78-flash-over-edl.sh verify boot    out/boot-mainline-ufi103s.img
+scripts/78-flash-over-edl.sh reboot            # see the caveat below
+```
+
+* `78- reboot` sends `<power value="reboot"/>`; **on this unit that warm-resets straight back
+  into QDL** (`05c6:9008` again, no OS boot attempted, no enumeration). `--resetmode=reset` does
+  cold-boot it. When in doubt: unplug, 5 s, plug in without the button.
+* Flash the rungs in order (`rootfs` → `aboot`+`hyp` → `boot`). The factory aboot has no
+  `extlinux` parser, so a mainline `boot` image flashed first leaves the board in fastboot with
+  no OS.
+* Only one stick should be attached when you write over EDL, and never two when you write by
+  name at all: both units answer adb as `0123456789`, share the root `PARTUUID`, and hand the
+  host the *same* gadget MAC (`2a:85:da:41:eb:f9` — an upstream constant, not derived from the
+  serial), so the interface name identifies nothing. The eMMC serial is the only discriminator.
+* Nothing here writes `sbl1`/`rpm`/`tz` or any calibration partition (`modemst1/2`, `fsg`,
+  `fsc`, `sec`, `cdt`, `devinfo`).
 
 ## Quickstart
 
@@ -165,20 +304,35 @@ Two consequences that matter for the plan:
   expanding `$name` before it was assigned.
 
 **Not yet run / unproven:**
-* `50-build-rootfs.sh` — needs arm64 binfmt for docker, which this host lacks today
-  (`docker run --platform linux/arm64` gives `exec format error`).
+* `50-build-rootfs.sh` — the Debian route still needs arm64 binfmt on this host for docker
+  (`docker run --platform linux/arm64` gave `exec format error` until qemu binfmt was registered
+  with `docker run --privileged multiarch/qemu-user-static --reset -p yes`; the Alpine route,
+  `53-build-alpine-cross.sh`, now uses that same door and is proven).
 * `60-build-bootimg.sh repack` — the tool is unit-tested and the stock DTB is extracted, but no
   newer kernel binary has been fed through it, and a 5.15-era FDT on a 6.x kernel is unverified.
-* `70-flash.sh` — never executed. **fastboot and EDL entry on this stick are still unconfirmed**,
-  so the rootfs rollback path is not yet proven. Test that (PLAN step 6) before flashing anything
-  but `boot`.
 * The apt upgrade itself, and the configfs fallback unit on a live trixie system.
 
-Rollback story, stated honestly: `backup/boot-stock.bin` restores the kernel/boot path and is
-md5-verified; `backup/rootfs-files.tar.zst` is a file-level snapshot of Debian 11 (not a
-partition image). A *clean* rootfs rollback needs either fastboot (`fastboot flash rootfs`,
-sparse-aware) or EDL (`edl w rootfs …`), and neither has been confirmed reachable on this stick
-yet.
+**Download doors, measured on this stick 2026-11-06 (both were listed as unconfirmed):**
+* fastboot: `adb reboot bootloader` → in fastboot ~3 s later as its own serial,
+  `getvar version` 0.5, `partition-size:boot` 0x4000000, `partition-size:rootfs` 0xd4dfbe00,
+  `max-download-size` 0x10000000, and `fastboot reboot` returns it to Debian. Note
+  `version-special` is **empty** on this unit's factory aboot, so the "this is the FACTORY aboot"
+  heuristic in `config/flashpack/flash.sh` cannot fire here — the rung order is what protects it.
+* EDL: **the button is not a fastboot entry.** Holding it while plugging in gives `05c6:9008`
+  (QDL) - so when the installed userspace does not boot, there is no software path back into the
+  bootloader and EDL is the only door. The db410c programmer in `vendor/db410c-firmware` works:
+  firehose reports `TargetName=MSM8916 MemoryName=eMMC`, reads this board's real GPT, writes
+  `rootfs`, and **reads it back byte-identical** - the verification `fastboot fetch` cannot give.
+  EDL carries no serial, so `scripts/78-flash-over-edl.sh` identifies the board by reading its
+  `boot` partition and matching the model string in its own stock DTB, and refuses to write if
+  that does not agree with `BOARD_ENV`.
+
+Rollback story, stated honestly: `backup-ufi103s/boot-stock.bin` restores the kernel/boot path and
+is md5-verified; `backup-ufi103s/rootfs-files.tar.zst` is a file-level snapshot of Debian 11 (not a
+partition image), and no raw rootfs image was taken - so the stock userspace is *not* restorable as
+an image. What is now proven is the transport: both `fastboot flash rootfs` and `edl w rootfs`
+work on this stick, and EDL additionally can read partitions back, so a rootfs write can be
+verified without booting it.
 
 `backup/`, `notes/`, `out/`, `vendor/` are gitignored: the dumps contain IMEI-bearing
 partitions and vendor binaries.

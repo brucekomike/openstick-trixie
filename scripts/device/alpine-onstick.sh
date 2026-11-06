@@ -54,6 +54,13 @@ ALPINE_HOST=${ALPINE_HOST:-openstick-alpine}
 # 896 MB keeps the peak (extracted tree + image + gz) inside the ~2.4 GB this board
 # has free; the partition is 3.3 GB and resize2fs grows it after first boot.
 ROOTFS_MB=${ROOTFS_MB:-896}
+# Extra mke2fs arguments for the rootfs image, empty by default. A cross build runs a newer
+# e2fsprogs than this board does (host 1.47.4 vs the stick's 1.46.2) and 1.47 will set feature
+# bits the vendor 5.15 kernel cannot mount, which fails rung 1. See scripts/53-build-alpine-cross.sh.
+MKFS_EXTRA=${MKFS_EXTRA:-}
+# The DT model string for /etc/openstick-build. On the device this script reads it from
+# /proc/device-tree/model; a container has no device tree, so the caller passes it.
+BOARD_MODEL=${BOARD_MODEL:-}
 
 DTB_SRC=${DTB_SRC:-$IN/board.dtb}
 NCM_SRC=${NCM_SRC:-$IN/setup_ncm_gadget.sh}
@@ -62,6 +69,22 @@ NM_CONNS=${NM_CONNS:-$IN/nmconnections}
 say() { echo "[$(date -u +%H:%M:%S)] $*"; }
 die() { say "BUILD_FAILED: $*"; exit 1; }
 inbox() { chroot "$ROOTFS" /bin/sh -c "$*"; }
+
+# CROSS_APK = a path to apk-tools built for the HOST architecture (a static binary). With it,
+# the download, dependency solving and file extraction all run at host speed; the target's
+# %post scripts still execute, because apk forks, chroots into $ROOTFS and execs its /bin/sh -
+# which the kernel's binfmt handler then runs under emulation. Measured on this board's build:
+# the same package set takes ~9 min with the target's own aarch64 apk under qemu-user and ~26 s
+# natively, and the effects that only a script can produce (the dbus and dnsmasq users, the
+# ca-certificates bundle from its trigger) came out byte-for-byte equivalent.
+# Without CROSS_APK the emulated path below is used exactly as before.
+xapk() {
+  if [ -n "${CROSS_APK:-}" ] && [ -x "$CROSS_APK" ]; then
+    "$CROSS_APK" add --root "$ROOTFS" --arch aarch64 --allow-untrusted "$@"
+  else
+    inbox "apk add --allow-untrusted $*"
+  fi
+}
 
 # --------------------------------------------------------------------------- 0 preflight
 say "preflight"
@@ -72,7 +95,10 @@ AVAIL=$(df -Pk / | awk 'NR==2{print $4}')
 [ -s "$NCM_SRC" ] || die "missing $NCM_SRC"
 [ -d "$NM_CONNS" ] || die "missing $NM_CONNS"
 wget -q -O /dev/null "$MIRROR/$RELEASE/main/aarch64/APKINDEX.tar.gz" ||
-  die "no route to $MIRROR - give the stick wifi first: nmcli device wifi connect \"SSID\" password \"PSK\""
+  die "no route to $MIRROR. On the stick: connect Wi-Fi first (nmcli device wifi connect \"SSID\"
+  password \"PSK\"). On the host (scripts/53-build-alpine-cross.sh): rerun with MIRROR= pointing at
+  a mirror this network can actually reach - dl-cdn has served TLS errors here; the repositories
+  written into the image are normalized afterwards, so the build mirror is not what ships."
 say "mirror reachable, $((AVAIL / 1024)) MB free"
 
 # --------------------------------------------------------------------------- 1 base
@@ -101,9 +127,9 @@ done
 mount -t proc proc "$ROOTFS/proc"
 trap 'umount -l "$ROOTFS/proc" 2>/dev/null || true' EXIT INT TERM
 
-inbox "apk add --allow-untrusted alpine-keys ca-certificates curl wget kmod" ||
+xapk --initdb alpine-keys ca-certificates curl wget kmod ||
   die "bootstrap apk add failed - check the mirror"
-inbox "apk add --allow-untrusted postmarketos-keys@pmos" ||
+xapk postmarketos-keys@pmos ||
   die "postmarketos-keys failed - the @pmos repo line is wrong or unreachable"
 
 # --------------------------------------------------------------------------- 2 packages
@@ -114,6 +140,27 @@ say "2/8 package set"
 PKGS="openrc eudev udev-init-scripts udev-init-scripts-openrc dbus dropbear shadow sudo"
 PKGS="$PKGS chrony iw wireless-regdb iproute2 iptables bridge-utils dnsmasq"
 PKGS="$PKGS e2fsprogs e2fsprogs-extra zstd parted"
+# The ssh CLIENT is not optional and was previously only implied: `openssh` is a metapackage
+# that depends on openssh-client AND openssh-server AND openssh-sftp-server, so asking for the
+# metapackage installed a second daemon next to dropbear while making it look like the client
+# was the reason. The client is what lets the stick dial out (reverse tunnel when the gadget
+# link is dead, ssh to the other stick at 192.168.5.1); dropbear remains the only server.
+PKGS="$PKGS openssh-client nano"
+# Two toolsets:
+#   minimal - what a session on the serial console actually needs: editor, ssh client,
+#             iproute2/iptables, nmcli, iw, usbutils, e2fsprogs. This is the default.
+#   full    - adds the network tooling on top: scanner, capture, DNS lookups, throughput,
+#             tracing, socat.
+# Not because 461 MB is generous - it is not - but so the small image is what ships by
+# default and `full` is a deliberate choice. Package names and sizes were read out of the
+# v3.24 main/community APKINDEXes on 2026-11-06; mtr, whois and traceroute live in community.
+# (These are toolsets, not releases: the repo's own version is VERSION.)
+EXTRA_PKGS="nmap nmap-ncat tcpdump bind-tools iperf3 mtr traceroute whois socat netcat-openbsd iputils"
+case " ${TOOLSET:-minimal} " in
+  *full*) PKGS="$PKGS $EXTRA_PKGS"
+          say "toolset: full - $EXTRA_PKGS" ;;
+  *)      say "toolset: minimal. TOOLSET=full adds: $EXTRA_PKGS" ;;
+esac
 # gcompat is what lets the vendor's glibc adbd run on this musl rootfs, which is the only
 # way to get `adb shell` here: Alpine packages no adbd at all, and the edge/testing one is
 # Waydroid's build with no functionfs transport. scripts/76-fetch-adbd-payload.sh has the
@@ -122,18 +169,25 @@ PKGS="$PKGS gcompat"
 # Alpine splits NetworkManager into daemon + cli + tui + dnsmasq + wifi + wwan. Installing
 # only `networkmanager` gives a daemon with no nmcli, and the Wi-Fi door this board relies
 # on would then need a hand-written wpa_supplicant conf. Found by verifying the first image.
+#
+# `networkmanager-wifi` is the one that was still missing after that fix, and its absence is
+# not visible in any of the obvious places: wcn36xx binds, `iw phy0 info` lists `managed`
+# mode, `iw dev wlan0 scan` returns BSSes, and rfkill says unblocked - yet `nmcli device
+# status` reports wlan0 `unavailable` forever, because NM has no Wi-Fi device factory at all.
+# It lives in /usr/lib/NetworkManager/<version>/libnm-device-plugin-wifi.so.
 PKGS="$PKGS networkmanager networkmanager-cli networkmanager-tui networkmanager-dnsmasq"
+PKGS="$PKGS networkmanager-wifi"
 PKGS="$PKGS modemmanager libqmi usbutils"
 PKGS="$PKGS rmtfs@pmos msm-firmware-loader@pmos linux-postmarketos-qcom-msm8916@pmos"
 rc=0
-inbox "apk add $PKGS" > "$WORK/pkg.log" 2>&1 || rc=1
+xapk $PKGS > "$WORK/pkg.log" 2>&1 || rc=1
 if [ "$rc" != 0 ]; then
   # One unresolvable name would abort the whole set; retry per package so the build
   # continues and the log names exactly what is missing.
   say "group install failed (see $WORK/pkg.log), retrying individually"
   FAILED=""
   for p in $PKGS; do
-    if inbox "apk add $p" >/dev/null 2>&1; then
+    if xapk "$p" >/dev/null 2>&1; then
       say "  ok   $p"
     else
       say "  MISS $p"
@@ -203,15 +257,36 @@ cat > "$ROOTFS/etc/fstab" <<EOF
 /dev/disk/by-partlabel/boot	/boot	ext2	defaults,noauto	0 0
 EOF
 
+# OpenRC's `networking` service needs /etc/network/interfaces to exist, and a CI/minirootfs
+# image never has one: setup-interfaces is an installer step that this build path does not
+# run. Without the file ifquery cannot parse it, `networking` fails, and everything that
+# depends on it fails with it - measured on both boards, where dropbear sat [stopped] in the
+# default runlevel and the documented "ssh over NCM" admin door was therefore never open,
+# silently, because adb worked. Loopback only: NM and gadget-net-up.sh own the real
+# interfaces, and ifupdown must not race them.
+mkdir -p "$ROOTFS/etc/network"
+cat > "$ROOTFS/etc/network/interfaces" <<'EOF'
+# loopback only - the gadget link is configured by /usr/local/bin/gadget-net-up.sh and
+# wlan0/wwan0 by NetworkManager. See config/alpine-gadget/.
+auto lo
+iface lo inet loopback
+EOF
+
 # Last-resort door: a root shell on the serial console, which is what the plan falls back
 # to when the gadget is dead. Physically attaching to ttyMSM0 therefore equals root.
 sed -i 's/^tty/#tty/' "$ROOTFS/etc/inittab" || true
 echo 'ttyMSM0::respawn:/bin/sh' >> "$ROOTFS/etc/inittab"
 
+# dropbear is deliberately NOT enabled here: an ssh server whose only credential is the
+# upstream builder's published default password is a door you open on purpose, not one that
+# ships open. adb and the USB serial console are the two defaults. `rc-update add dropbear
+# default && rc-service dropbear start` opens it, and scripts/55-patch-alpine-image.sh
+# removes the symlink if an older build left it in.
 for s in "devfs sysinit" "dmesg sysinit" "udev sysinit" "udev-trigger sysinit" \
          "udev-settle sysinit" "hwclock boot" "modules boot" "hostname boot" \
          "sysctl boot" "bootmisc boot" "networking boot" "mount-ro shutdown" \
-         "killprocs shutdown" "savecache shutdown" "dropbear default" "dbus default" \
+         "killprocs shutdown" "savecache shutdown" "dbus default" \
+         "wpa_supplicant boot" \
          "networkmanager default" "rmtfs default" "modemmanager default"; do
   name=${s%% *}
   runlevel=${s##* }
@@ -223,7 +298,7 @@ for s in "devfs sysinit" "dmesg sysinit" "udev sysinit" "udev-trigger sysinit" \
 done
 
 cat > "$ROOTFS/etc/openstick-build" <<EOF
-board=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)
+board=${BOARD_MODEL:-$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)}
 dtb=msm8916-handsome-openstick.dtb (stock, sha256 $(sha256sum "$DTB_SRC" | cut -c1-16))
 built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 kernel=$KDIR + vendor $VENDOR_KVER
@@ -272,7 +347,7 @@ trap - EXIT INT TERM
 
 rm -f "$OUTD/rootfs.img" "$OUTD/boot.img"
 truncate -s "${ROOTFS_MB}M" "$OUTD/rootfs.img"
-mke2fs -q -F -L rootfs -t ext4 -m 0 -d "$ROOTFS" "$OUTD/rootfs.img" ||
+mke2fs -q -F -L rootfs -t ext4 -m 0 $MKFS_EXTRA -d "$ROOTFS" "$OUTD/rootfs.img" ||
   die "mke2fs rootfs failed (image too small? used $(du -sh "$ROOTFS" | cut -f1) vs ${ROOTFS_MB} MB)"
 truncate -s 64M "$OUTD/boot.img"
 mke2fs -q -F -L boot -t ext2 -d "$BOOTSTAGE" "$OUTD/boot.img" || die "mke2fs boot failed"

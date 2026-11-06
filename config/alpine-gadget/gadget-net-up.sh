@@ -65,13 +65,27 @@ ip addr flush dev "$iface" 2>/dev/null
 ip addr add "$ADDR" dev "$iface"
 ip link set "$iface" up
 
-# Serve DHCP on the gadget link so the host needs no configuration of its own. `port=0`
-# keeps dnsmasq out of DNS entirely - it is here for the lease, not for name service.
+# Serve DHCP on the gadget link so the host needs no configuration of its own, and answer DNS
+# too - the host is handed 192.168.5.1 as its resolver, so something must listen.
+#
+# Measured on the UFI103s: with `--port=0` dnsmasq did DHCP only, and the laptop got a lease,
+# a route and a nameserver that was never answering. The upstream servers are not read from
+# /etc/resolv.conf (on this image that points back at 127.0.0.1/192.168.5.1, which would make
+# dnsmasq query itself); nat-share.sh maintains the real ones from the uplink in $DNS_FILE and
+# sends dnsmasq SIGHUP when they change. `--bind-interfaces` keeps us on the gadget address
+# only, so NM's own dnsmasq (used by the hotspot profile) can hold a different one.
+DNS_DIR=${DNS_DIR:-/var/lib/nat-share}
+DNS_FILE=$DNS_DIR/upstream-dns
+mkdir -p "$DNS_DIR" 2>/dev/null || true
+[ -f "$DNS_FILE" ] || : > "$DNS_FILE"
+GADGET_IP=${GADGET_IP:-${ADDR%%/*}}
 if ! pidof dnsmasq >/dev/null 2>&1; then
   dnsmasq --interface="$iface" --bind-interfaces \
     --dhcp-range="$DHCP_LO","$DHCP_HI",255.255.255.0,12h \
-    --dhcp-option=6,192.168.5.1 --port=0 --log-dhcp --log-facility="$LOG" \
-    && log "dnsmasq started on $iface" || log "WARN dnsmasq did not start"
+    --dhcp-option=6,"$GADGET_IP" --resolv-file="$DNS_FILE" --no-hosts \
+    --log-dhcp --log-facility="$LOG" \
+    && log "dnsmasq started on $iface (dhcp $DHCP_LO-$DHCP_HI, dns from $DNS_FILE)" \
+    || log "WARN dnsmasq did not start"
 else
   log "dnsmasq already running"
 fi

@@ -15,6 +15,11 @@
 . "$(dirname "$0")/lib.sh"
 require_backup boot-stock.bin
 require_device
+# A second live run was real, not hypothetical: a relaunched build raced the one still
+# driving /root/alpine-build, and both sides' images came out corrupt. One lock per device.
+exec 9>"/tmp/openstick-54-${ADB_SERIAL}.lock"
+flock -n 9 || die "another 54-build-alpine-onstick.sh is already driving $ADB_SERIAL -
+       it owns /root/alpine-build on that stick; wait for it (or kill it) first"
 
 WORK_DEV=/root/alpine-build
 DEV_SCRIPT="$ROOT/scripts/device/alpine-onstick.sh"
@@ -30,31 +35,54 @@ python3 "$ROOT/tools/bootimg.py" unpack "$BACKUP/boot-stock.bin" "$IMGDIR" | sed
 DTB="$IMGDIR/dtb0.dtb"
 [ -s "$DTB" ] || die "no dtb0.dtb inside backup/boot-stock.bin"
 
-# This adbd has no working exec-out, so every device read goes through a PTY that can
-# smear a later stderr ("...: command not found") onto the tail of an earlier answer.
-# Nothing here trusts a raw device string: the values are pulled out by shape.
-LIVE_MODEL=$(dev "tr '\\0' '\\n' < /proc/device-tree/model" | grep -oE 'Handsome OpenStick.*UFI[A-Z0-9]+' | head -1)
-LIVE_BOARD_COMPAT=$(dev "tr '\\0' '\\n' < /proc/device-tree/compatible" | grep -oE '^[a-zA-Z0-9]+,[a-zA-Z0-9-]+' | head -1)
-[ -n "$LIVE_MODEL" ] || die "could not read a sane model string from the device"
-BOARD_TAG=$(echo "$LIVE_MODEL" | grep -oE 'UFI[A-Z0-9]+' | tail -1)
-[ -n "$BOARD_TAG" ] || die "no UFIxxxx board tag in the live model string '$LIVE_MODEL'"
-log "live model: $LIVE_MODEL (tag $BOARD_TAG)"
-python3 "$ROOT/tools/bootimg.py" info "$BACKUP/boot-stock.bin" | grep -q "$BOARD_TAG" ||
+# Board identity comes from require_board (called by require_device above), which prefers
+# /proc/device-tree/serial-number - the one identifier that survives a board being converted
+# to a mainline kernel and a community DTB. Deriving the tag from the live model string here
+# is what this block used to do, and it only worked while the board was still on the vendor
+# DTB: the community one reads "ufi-001c/ufi-001b 4G Modem Stick", which matched nothing, and
+# under `set -euo pipefail` the empty grep aborted the whole script without a message.
+# Every device grep below carries `|| true` for the same reason.
+LIVE_MODEL=$(dev "tr '\\0' '\\n' < /proc/device-tree/model" | tr '\n' ' ' | sed 's/  */ /g; s/ $//' || true)
+LIVE_BOARD_COMPAT=$(dev "tr '\\0' '\\n' < /proc/device-tree/compatible" | grep -oE '^[a-zA-Z0-9]+,[a-zA-Z0-9-]+' | head -1 || true)
+log "live model: ${LIVE_MODEL:-<unreadable>} (tag $BOARD_TAG, already matched against the backup)"
+
+# require_board has already proved $BACKUP/boot-stock.bin mentions $BOARD_TAG; repeat it here
+# only because this script can be read on its own. Captured, not piped into grep -q: a
+# `grep -q` that matches early SIGPIPEs the producer and pipefail reports the *match* as a
+# failure.
+info=$(python3 "$ROOT/tools/fdt.py" prop "$DTB" / 2>/dev/null || true)
+bootinfo=$(python3 "$ROOT/tools/bootimg.py" info "$BACKUP/boot-stock.bin" 2>/dev/null || true)
+printf '%s\n' "$bootinfo" | grep -qi "$BOARD_TAG" ||
   die "the DTB in backup/boot-stock.bin does not mention '$BOARD_TAG' - wrong board's backup, re-run scripts/20-backup.sh"
-# Only the board-level compatible is compared over the device: this adbd answers through a
-# PTY and has been seen to cut the property list short, and a false negative there would
-# block a build that is perfectly safe. The SoC half is checked against the local DTB only.
-DTB_COMPS=$(python3 "$ROOT/tools/fdt.py" prop "$DTB" / | grep -oE '[a-zA-Z0-9]+,[a-zA-Z0-9-]+')
-DTB_BOARD_COMPAT=$(echo "$DTB_COMPS" | head -1)
+
+# The SoC half of `compatible` is a property of the DTB alone, so it is checked locally.
+DTB_COMPS=$(printf '%s\n' "$info" | grep -oE '[a-zA-Z0-9]+,[a-zA-Z0-9-]+' || true)
+DTB_BOARD_COMPAT=$(printf '%s\n' "$DTB_COMPS" | head -1)
 [ -n "$DTB_BOARD_COMPAT" ] || die "no compatible list found in $DTB"
-echo "$DTB_COMPS" | grep -qx 'qcom,msm8916' || die "stock DTB is not a qcom,msm8916 tree"
-[ -z "$LIVE_BOARD_COMPAT" ] || [ "$DTB_BOARD_COMPAT" = "$LIVE_BOARD_COMPAT" ] ||
-  die "DTB board compatible ($DTB_BOARD_COMPAT) != live ($LIVE_BOARD_COMPAT)"
-echo "  ok: stock DTB matches the running board ($DTB_BOARD_COMPAT / $(echo "$DTB_COMPS" | tail -1))"
+printf '%s\n' "$DTB_COMPS" | grep -qx 'qcom,msm8916' || die "stock DTB is not a qcom,msm8916 tree"
+
+# The board-level compatible is only comparable while the board still runs the vendor DTB.
+# Once it has been converted, the live tree is the community one (thwc,ufi001c) and differs by
+# design - that is the whole point of the conversion, and the stock DTB is still the right one
+# to pack because it is this unit's own. So: enforce equality on a vendor tree, explain a
+# community one. A false negative here would block a perfectly safe build.
+case "$LIVE_BOARD_COMPAT" in
+  "$DTB_BOARD_COMPAT")
+    echo "  ok: stock DTB matches the running board ($DTB_BOARD_COMPAT / $(printf '%s\n' "$DTB_COMPS" | tail -1))" ;;
+  "")
+    warn "could not read a live 'compatible' over the PTY - skipping the board-level comparison" ;;
+  handsome,openstick)
+    die "DTB board compatible ($DTB_BOARD_COMPAT) != live ($LIVE_BOARD_COMPAT), and the board is
+       still on the vendor DTB, so this backup is not from this unit" ;;
+  *)
+    echo "  note: the board runs '$LIVE_BOARD_COMPAT' (a community DTB) while this backup's stock"
+    echo "        DTB is '$DTB_BOARD_COMPAT'. Expected on an already-converted board; the stock DTB"
+    echo "        is still packed because it is this unit's own and describes its dual-SIM mux." ;;
+esac
 echo "  sha256 $(sha256sum "$DTB" | cut -d' ' -f1)  $(stat -c %s "$DTB") bytes"
 
 # root= PARTUUID must come from the device, not from the env file named for another stick.
-LIVE_UUID=$(dev "tr -d '\0' < /proc/cmdline" | grep -oE 'PARTUUID=[0-9a-fA-F-]+' | head -1 | cut -d= -f2)
+LIVE_UUID=$(dev "tr -d '\0' < /proc/cmdline" | grep -oE 'PARTUUID=[0-9a-fA-F-]+' | head -1 | cut -d= -f2 || true)
 [ -n "$LIVE_UUID" ] || die "could not read root=PARTUUID from /proc/cmdline"
 if [ "$LIVE_UUID" != "$ROOT_PARTUUID" ]; then
   warn "config env says $ROOT_PARTUUID but the device says $LIVE_UUID - using the device"
@@ -92,6 +120,15 @@ if [ "${COMMIT:-0}" = "1" ]; then
 fi
 
 log "4/6 run the build on the stick"
+# This board has no RTC battery and nothing on the minimal image syncs time, so its clock
+# can sit at 1970 - and apk then rejects every https certificate as "not yet valid"
+# (the postmarketos repo line fails with "TLS: server certificate not trusted").
+# Stamp the host's UTC onto the stick before the build starts.
+DEV_YEAR=$(dev "date -u -s @$(date -u +%s) >/dev/null 2>&1; date -u +%Y" | grep -oE '[0-9]{4}' | tail -1 || true)
+[ "$DEV_YEAR" = "$(date -u +%Y)" ] ||
+  die "could not set the stick's clock from the host (device year: '${DEV_YEAR:-unreadable}') -
+       apk will reject every mirror certificate while the clock reads 1970"
+echo "  clock synced: device year $DEV_YEAR"
 # One long foreground adb session, not a detached background job: this adbd kills the
 # whole process group when its session closes, so `nohup … &` / `setsid … &` produced no
 # build.log at all. A single long-lived `adb shell` is the mechanism 20-backup.sh already

@@ -61,9 +61,20 @@ docker run --rm --platform linux/arm64 \
     apt-get install -y -qq --no-install-recommends \
       systemd systemd-timesyncd iproute2 iptables nftables wpasupplicant \
       network-manager modemmanager libqmi-tools qrtr rmtfs \
-      openssh-server sudo tzdata locales ca-certificates vim-tiny \
+      openssh-client openssh-server nano nmap sudo tzdata locales ca-certificates vim-tiny \
       usbutils pciutils ethtool file
     apt-get clean
+    # These four are not optional and must not be assumed present. `openssh-server` does NOT
+    # pull openssh-client, so a minbase arm64 rootfs can end up with a daemon and no `ssh` -
+    # and without a client the stick cannot dial out, which is the only way to reach a stick
+    # whose gadget link is dead (reverse tunnel) or to ssh the other stick at 192.168.5.1.
+    # nmap is here because this device's whole job is being a radio on a network; Debian
+    # installs it without the setuid bit on purpose, so privileged probes (raw ping, SYN)
+    # need root - which is how this stick is administered anyway. Checked, not trusted:
+    for t in ssh scp ssh-keygen nano nmap; do
+      test -x "/usr/bin/$t" || { echo "FATAL: no /usr/bin/$t in the rootfs" >&2; exit 1; }
+    done
+    /usr/bin/ssh -V 2>&1 | head -1; /usr/bin/nmap --version 2>/dev/null | head -1
     # root login over adb/serial is how this stick is administered; set a password
     # before first boot with: docker run --rm -v $WORK:/t debian:trixie-slim \
     #   /usr/sbin/chroot /t passwd root

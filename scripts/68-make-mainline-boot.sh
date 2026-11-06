@@ -55,11 +55,15 @@ fi
 # The root PARTUUID must be read from the device, not trusted from an env file named for another
 # board. adb is gone once the rootfs is musl, so try ssh first, then adb, then the env value.
 SSH_KEY=${SSH_KEY:-$OUT/openstick_key}
+# `|| true` on both: the whole point is that either probe may fail and the next one is tried,
+# but under `set -euo pipefail` a failing ssh (no Alpine yet on the stick, so 192.168.5.1 answers
+# nothing) or a no-match grep aborts the script inside the assignment - silently, because the
+# failure is the exit status of the command substitution, not a printed error.
 UUID=$(timeout 15 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o ConnectTimeout=6 root@192.168.5.1 "tr -d '\0' < /proc/cmdline" 2>/dev/null |
-  grep -oE 'PARTUUID=[0-9a-fA-F-]+' | head -1 | cut -d= -f2)
+  grep -oE 'PARTUUID=[0-9a-fA-F-]+' | head -1 | cut -d= -f2 || true)
 if [ -z "$UUID" ]; then
-  UUID=$(dev "tr -d '\0' < /proc/cmdline" 2>/dev/null | grep -oE 'PARTUUID=[0-9a-fA-F-]+' | head -1 | cut -d= -f2)
+  UUID=$(dev "tr -d '\0' < /proc/cmdline" 2>/dev/null | grep -oE 'PARTUUID=[0-9a-fA-F-]+' | head -1 | cut -d= -f2 || true)
 fi
 if [ -z "$UUID" ]; then
   UUID=$ROOT_PARTUUID
@@ -76,10 +80,13 @@ if [ -s "$DTB_ALT" ]; then
 fi
 # The vendor 5.15 kernel + Debian initrd stay on the partition as a labelled fallback: they are
 # the only thing known to boot if a mainline kernel ever stops working.
-for k in "$OUT"/vmlinuz-5.15* "$OUT"/boot/vmlinuz-5.15*; do
+# Those two files are per-unit (each comes out of its own board's boot partition) while out/ is
+# shared scratch that can still hold the OTHER board's copies, so a run for a second board must
+# name its own with FALLBACK_KERNEL=/FALLBACK_INITRD= rather than trusting the glob.
+for k in ${FALLBACK_KERNEL:-} "$OUT"/vmlinuz-5.15* "$OUT"/boot/vmlinuz-5.15*; do
   if [ -s "$k" ]; then install -m 644 "$k" "$STAGE/vmlinuz-5.15"; break; fi
 done
-for r in "$OUT"/initrd-5.15* "$OUT"/boot/initrd.img-5.15*; do
+for r in ${FALLBACK_INITRD:-} "$OUT"/initrd-5.15* "$OUT"/boot/initrd.img-5.15*; do
   if [ -s "$r" ]; then install -m 644 "$r" "$STAGE/initrd-5.15"; break; fi
 done
 if [ ! -s "$STAGE/vmlinuz-5.15" ] && [ -s "$BACKUP/boot-stock.bin" ]; then

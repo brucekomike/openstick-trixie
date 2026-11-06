@@ -1,0 +1,11 @@
+#!/bin/sh
+# NetworkManager dispatcher hook: keep the host's internet share in step with the uplink.
+#
+# NM calls this as:  90-nat-share <interface> <action>
+# with action up / down / change / dhcp6-change whenever a connection gains or loses an
+# address. The script it execs re-reads the default route itself, so it does not matter which
+# interface NM names - Wi-Fi, LTE or a future Ethernet all work the same way.
+#
+# Installed to /etc/NetworkManager/dispatcher.d/ by scripts/55-patch-alpine-image.sh. NM runs
+# dispatcher scripts as root and ignores non-executable files, so the mode matters.
+exec /usr/local/bin/nat-share.sh apply

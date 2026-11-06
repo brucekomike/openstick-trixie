@@ -1,0 +1,179 @@
+# @PACK_NAME@
+
+A complete installation set for the MSM8916 "Handsome OpenStick" 4G dongles (UFI001C /
+UFI001B / UFI103S / UFI003 family). Built @BUILT@ for board **@BOARD_TAG@**.
+
+Everything below was measured on real hardware, not inferred from vendor documentation. The
+reasoning behind each step — and the five flash cycles that produced it — lives in the
+repository's `BOARD-ufi001c.md`.
+
+| | |
+|---|---|
+| result | Alpine Linux @ALPINE@ on mainline kernel **@KERNEL@** |
+| default DTB | `@DEFAULT_DTB@` (alternates are already on the boot partition) |
+| root PARTUUID | `@PARTUUID@` |
+| rootfs image | @ROOTFS_BYTES@ bytes → grown with `resize2fs` on first boot |
+| boot image | @BOOT_BYTES@ bytes, ext2 + `extlinux.conf` |
+| factory images | @HAS_RESTORE@ |
+| toolset | **@TOOLSET@** (minimal = editor + ssh client; full adds nmap/tcpdump/bind-tools/iperf3/mtr/…) |
+| pack version | v@REPO_VERSION@ |
+
+## What you need on the host
+
+- `fastboot` (Android platform-tools). On Debian/Ubuntu it works without sudo if
+  `/lib/udev/rules.d/51-android.rules` exists and your user is in `plugdev`.
+- `sha256sum` (coreutils) — the installers verify the pack before writing anything.
+- `lsusb` (usbutils) — used to detect the board coming back.
+- Roughly 15 minutes. The rootfs transfer alone is ~6.5 min for ~940 MB (sparse-trimmed: only
+  the ~222 MB that is not zero is actually sent).
+- If the stick will not boot at all, there is a second door: EDL. It needs the firehose
+  programmer (`vendor/db410c-firmware/prog_emmc_firehose_8916.mbn`) and, on Debian,
+  `python3-usb pyserial docopt colorama` + bkerler/edl. `scripts/78-flash-over-edl.sh` in the
+  repository wraps it, and unlike fastboot it can also read partitions back — so it can prove a
+  write without booting it. See the recovery section.
+
+## Before you start
+
+**This pack's `restore/` images came from one specific board.** They are the factory
+`aboot`/`hyp`/`sbl1`/`rpm`/`tz`/`boot` of the unit this pack was built for. Restoring them
+onto a *different* unit writes that other unit's bootloader — same family, same partition
+layout, but not its own images. If the board in front of you is not @BOARD_TAG@, back it up
+first (`scripts/20-backup.sh`) and rebuild the pack for it.
+
+Read the whole file before flashing. In particular: `fastboot fetch` is not implemented by
+either bootloader on these boards, so **nothing can be read back after a write**. The only
+verification available is booting it, which is what the installer does at each rung.
+
+## Install
+
+```sh
+./flash.sh                       # dry run: verifies the manifest, prints the plan
+COMMIT=1 I_WIPE_ROOTFS=yes ./flash.sh
+```
+
+Get into fastboot first. From a running system, no hands needed:
+
+```sh
+adb reboot bootloader            # vendor Debian image
+scripts/72-enter-fastboot.sh       # Alpine image (reboot(2) RESTART2 over ssh)
+```
+
+From a dead system the button is **not** a way into fastboot: measured on the UFI103s, holding
+it while plugging in puts the board into EDL (`05c6:9008`, QDL), which needs the `edl` tool and
+a firehose programmer (`vendor/db410c-firmware/prog_emmc_firehose_8916.mbn`). It is the last
+door, not the easy one.
+
+### Why the installer goes in this order
+
+1. **rootfs first, bootloader untouched.** The Alpine rootfs carries the vendor 5.15 modules
+   and `/lib/firmware`, so the *stock* Android `boot` image boots it unchanged. After this
+   rung the board runs a new userspace on a known-good kernel — the reversible checkpoint.
+   That checkpoint only exists if the image's ext4 features are ones the **vendor** kernel can
+   mount read-write. `mke2fs` 1.47 sets `metadata_csum_seed` by default, which needs Linux 6.3;
+   measured on the UFI103s, a rootfs carrying it made the stock 5.15.0 initrd fail to mount root
+   and the board went completely silent on USB (no adb, no gadget, no fastboot) — a failure this
+   rung is not supposed to be able to produce. `scripts/53-build-alpine-cross.sh` refuses to
+   emit such an image.
+2. **Then `aboot` + `hyp`.** The factory `aboot` has no `extlinux` parser at all
+   (`grep -c extlinux` over it returns 0) and will not start a mainline arm64 kernel: three
+   different 6.12 payloads all fell back to fastboot, while a byte-identical no-op repack of
+   the stock image booted. The community `lk1st` parses `extlinux.conf` and runs @KERNEL@.
+   Rebooting between rungs proves the new aboot still boots the legacy image before anything
+   depends on it.
+3. **Then `boot`.** Only now is an ext2 + `extlinux.conf` partition readable. Flashing this
+   image before rung 2 leaves the board in fastboot with no OS — that is the single most
+   common way to get this wrong.
+
+`sbl1`, `rpm` and `tz` are **never written** by the installer. This board's `tz` is already
+byte-identical to the Dragon Board 410c one, and @KERNEL@ boots with the vendor `sbl1`/`rpm`
+in place — so the riskiest flash on this SoC is simply not needed. The calibration partitions
+(`modemst1`, `modemst2`, `fsg`, `fsc`, `sec`, `cdt`, `devinfo`) carry the radio identity and
+are not written by anything in this pack either.
+
+## First boot
+
+```sh
+ip -br addr | grep -i enx        # a 192.168.5.x lease = the USB gadget came up
+adb devices                      # the board's own serial, not a placeholder
+adb -s <serial> shell id         # uid=0(root)
+```
+
+Then, over `adb shell` or `ssh -i <key> root@192.168.5.1`:
+
+```sh
+resize2fs /dev/disk/by-partlabel/rootfs      # the image is ~896 MB, the partition is 3.3 GiB
+passwd user                                   # upstream's default user/1 - change it
+```
+
+Login reality, corrected 2026-11-06 by reading the image rather than the docs: **`root` is
+locked** (`passwd -S root` → `L`) and there is no `authorized_keys`, so
+`ssh -i <key> root@192.168.5.1` from this file's earlier revision could never have worked. The
+account is `user` with the builder's default password and passwordless sudo.
+
+`dropbear` is **not enabled** in this image. An ssh server whose only credential is a
+published default password should be opened on purpose:
+
+```sh
+rc-update add dropbear default && rc-service dropbear start     # then: ssh user@192.168.5.1
+```
+
+Wi-Fi is a client decision, not a flashed one — no network and no password is baked in:
+
+```sh
+nmcli device wifi list
+nmcli device wifi connect "<SSID>" password "<PSK>"
+nat-share.sh status                    # what it is sharing to the host, and why
+```
+
+Three admin doors exist, and it is worth confirming all three before you need one:
+
+| door | how | survives |
+|---|---|---|
+| adb | `adb -s <serial> shell` (root, binary-safe push/pull) | a broken network config |
+| ssh over NCM | `ssh user@192.168.5.1` — **opt-in**, see above; or the Wi-Fi/LTE address | a broken USB gadget |
+| USB serial | `cu -l /dev/ttyACM0 -s 115200` → passwordless root shell | both of the above |
+
+`adb exec-out` answers `error: closed` on this daemon; use `adb shell` for text and
+`adb pull`/`push` for binaries.
+
+## Switching kernel or DTB — no reflash needed
+
+`/boot` is a real mounted ext2 partition, so this is a file copy:
+
+```sh
+ls /boot/extlinux/
+cp /boot/extlinux/extlinux-handsome.conf /boot/extlinux/extlinux.conf && reboot   # stock DTB
+cp /boot/extlinux/extlinux-5.15.conf     /boot/extlinux/extlinux.conf && reboot   # vendor 5.15
+```
+
+The community DTB is the default because it carries the `rmtfs@`/`mpss@` reserved-memory
+nodes the modem probe needs; under the stock `handsome,openstick` DTB the modem fails with
+`qcom-q6v5-mss: unable to resolve mpss region` and there is no LTE at all. The stock DTB's
+advantage is that it describes the dual-SIM mux, which the community one collapses to a
+single external slot.
+
+## Recovery
+
+```sh
+./restore.sh                                  # dry run
+COMMIT=1 I_RESTORE_FACTORY=yes ./restore.sh   # aboot/hyp/sbl1/rpm/tz/boot back to factory
+```
+
+That restores the **boot chain only**. The rootfs partition is not recoverable from this
+pack: there is no raw image of the original filesystem, because reading one back needs
+`fastboot fetch` (unimplemented) or EDL (unproven on this family). What the repository keeps
+instead is a file-level archive, so a full userspace rollback means creating a fresh ext4 on
+the `rootfs` partition and unpacking that archive into it.
+
+Last resort, if the board shows `05c6:9008` on USB: it is in EDL and needs a firehose
+programmer (`prog_emmc_firehose_8916.mbn`) plus the `edl` tool.
+
+## Provenance
+
+Every file in this pack is listed in `MANIFEST.sha256`, which both installers verify with
+`sha256sum -c --strict` before writing anything. The pack also carries `adbd-payload/`, the
+three files that give a musl rootfs a root `adb shell` — the vendor's glibc `adbd` running
+under `gcompat`, plus the `libcrypto.so.1.1` it needs (which cannot be replaced by Alpine's
+`libcrypto.so.3`, because the daemon references the *versioned* symbol
+`RSA_verify@OPENSSL_1_1_0`). `scripts/76-fetch-adbd-payload.sh` in the repository re-derives
+and re-verifies them.

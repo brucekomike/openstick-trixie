@@ -109,7 +109,7 @@ set -e
 set -o pipefail
 # GLIBC_2.17 is the ceiling gcompat is comfortable with; a newer build could still work but
 # is not what was tested, so say so rather than failing the run.
-maxglibc=$(readelf --dyn-syms -W "$DEST/adbd" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1)
+maxglibc=$(readelf --dyn-syms -W "$DEST/adbd" 2>/dev/null | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1 || true)
 echo "  info highest glibc symbol version required: ${maxglibc:-none}"
 [ "$fail" = 0 ] || die "payload verification failed - do not patch an image with it"
 

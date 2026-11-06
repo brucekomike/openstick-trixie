@@ -6,11 +6,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONF="$ROOT/config"
 NOTES="$ROOT/notes"
-# Both are overridable, and both have to be: this probe holds two boards whose backups are
-# NOT interchangeable (`backup/` = UFI001C, `backup-ufi103s/` = UFI103s). They answer adb as
-# the same 0123456789, so a hardcoded path here silently hands one board the other's boot
-# image, DTB and partition dumps. require_board below is what proves the pairing is right.
-BACKUP="${BACKUP:-$ROOT/backup}"
 OUT="$ROOT/out"
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 
@@ -19,8 +14,27 @@ warn() { printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing host command: $1"; }
 
+# Caller-supplied environment must survive sourcing the board file, which assigns plain
+# values. Without this, `ADB_SERIAL=x scripts/...` is silently overwritten by the file's own
+# ADB_SERIAL="" and the run reports an ambiguity the caller had already resolved. Measured:
+# every override looked broken until this was added.
+_OVERRIDABLE=(ADB_SERIAL BOARD_SERIALNO BOARD_TAG HOST_GADGET_IF HOST_GADGET_IP HOST_UPLINK_IF)
+declare -A _SAVED=()
+for _v in "${_OVERRIDABLE[@]}"; do _SAVED[$_v]="${!_v-}"; done
+_BACKUP_IN="${BACKUP-}"
+
 # shellcheck source=/dev/null
 . "${BOARD_ENV:-$CONF/board-ufi103s.env}"
+
+for _v in "${_OVERRIDABLE[@]}"; do
+  if [ -n "${_SAVED[$_v]}" ]; then printf -v "$_v" '%s' "${_SAVED[$_v]}"; fi
+done
+unset _v
+# Precedence for the per-unit backup tree: an explicit BACKUP= wins, then the board file's
+# own BOARD_BACKUP_DIR, then ./backup. The two boards' dumps are not interchangeable, so
+# letting each env file name its own tree removes a whole class of cross-board mistakes.
+BACKUP="${_BACKUP_IN:-$ROOT/${BOARD_BACKUP_DIR:-backup}}"
+unset _BACKUP_IN _SAVED _OVERRIDABLE
 
 adb_cmd() {
   if [ -n "${ADB_SERIAL:-}" ]; then adb -s "$ADB_SERIAL" "$@"; else adb "$@"; fi
@@ -152,20 +166,64 @@ fb_present() {
 require_board() {
   [ -n "${BOARD_TAG:-}" ] ||
     die "no BOARD_TAG in ${BOARD_ENV:-$CONF/board-ufi103s.env} - cannot tell the two sticks apart"
-  local live="" src="" sn=""
+  local live="" src="" sn="" dtsn="" model=""
   if adb_cmd get-state >/dev/null 2>&1; then
-    live=$(dev "tr '\\0' '\\n' < /proc/device-tree/model" | grep -oE 'UFI[A-Za-z0-9]+' | tail -1)
-    sn=$(dev "tr -d '\\0' < /proc/cmdline" | grep -oE 'androidboot\.serialno=[0-9a-f]+' | cut -d= -f2)
-    src="adb DT model${sn:+, serialno $sn}"
-    if [ -n "${BOARD_SERIALNO:-}" ] && [ -n "$sn" ] && [ "$sn" != "$BOARD_SERIALNO" ]; then
-      die "device serialno is $sn but this run is configured for $BOARD_SERIALNO - wrong stick plugged in"
+    # Identity order matters, and the obvious one is wrong once a board is converted:
+    #   * /proc/device-tree/serial-number is the eMMC serial and survives the switch to a
+    #     mainline kernel + community DTB. It is the only identifier that always works.
+    #   * androidboot.serialno is appended by the *vendor* boot chain only, so it disappears
+    #     under the community aboot.
+    #   * the DT model stops naming the board entirely: the community thwc-ufi001c DTB reads
+    #     "ufi-001c/ufi-001b 4G Modem Stick" for this whole family, so two different boards on
+    #     that DTB are indistinguishable by model. Tag matching is a fallback, never the proof.
+    # `test -r` first: this property exists on a mainline DTB but not on the vendor one. adb
+    # merges the remote stderr into its stdout, so a bare redirect leaks the device shell's
+    # "No such file or directory" into the captured value - where it then reads like a serial.
+    # `|| true` on all three: each is a grep that legitimately may not match (no
+    # androidboot.serialno under the community aboot, no serial-number on the vendor DTB, no
+    # UFIxxx tag in a mainline model string), and under `set -euo pipefail` a no-match grep
+    # inside a command substitution aborts the whole script without printing anything.
+    dtsn=$(dev "test -r /proc/device-tree/serial-number && tr -d '\\0' < /proc/device-tree/serial-number 2>/dev/null" | tr -cd '0-9a-zA-Z' || true)
+    sn=$(dev "tr -d '\\0' < /proc/cmdline" | grep -oE 'androidboot\.serialno=[0-9a-f]+' | cut -d= -f2 || true)
+    [ -n "$sn" ] || sn="$dtsn"
+    model=$(dev "tr '\\0' '\\n' < /proc/device-tree/model" | grep -oiE 'ufi-?[a-z0-9]+' | head -1 || true)
+    src="adb"
+    if [ -n "$dtsn" ]; then src="$src, serial-number $dtsn"; fi
+    if [ -n "$model" ]; then src="$src, model tag $model"; fi
+    if [ -n "${BOARD_SERIALNO:-}" ]; then
+      if [ -n "$sn" ] && [ "$sn" != "$BOARD_SERIALNO" ]; then
+        die "device serial is $sn but this run is configured for $BOARD_SERIALNO - wrong stick plugged in"
+      fi
+      if [ -z "$sn" ]; then
+        warn "could not read a serial from the device; falling back to the DT model tag"
+      fi
+      # A matching serial is stronger evidence than a model string, and the model string is
+      # not even unique per board under the community DTB.
+      live="$BOARD_TAG"
+    else
+      live="${model//-/}"
+      if [ -z "$live" ]; then
+        warn "BOARD_SERIALNO is unset and no UFIxxx tag is in the DT model - cannot prove
+       which board is plugged in. Set BOARD_SERIALNO (see config/board-*.env) to enable it."
+      fi
     fi
   elif fb_present; then
     live="$BOARD_TAG"; src="fastboot serial ${BOARD_SERIALNO:-unknown}"
   fi
-  [ -n "$live" ] ||
+  [ -n "$live" ] || {
+    local ndev
+    ndev=$(adb devices 2>/dev/null | grep -cw 'device' || true)
+    if [ "${ndev:-0}" -gt 1 ] && [ -z "${ADB_SERIAL:-}" ]; then
+      die "$ndev adb devices are attached and ADB_SERIAL is empty, so nothing can say which
+       one this run means. adb lists:
+         $(adb devices 2>/dev/null | grep -w device | awk '{print $1}' | tr '\n' ' ' || true)
+       Set ADB_SERIAL=<serial> (and ideally BOARD_SERIALNO= in the board env) and re-run.
+       Both are per-unit, which is why the committed env files leave them empty."
+    fi
     die "cannot identify the board: no adb, and no fastboot device matching ${BOARD_SERIALNO:-<serial>}"
-  [ "${live,,}" = "${BOARD_TAG,,}" ] ||
+  }
+  local want="${BOARD_TAG//-/}" got="${live//-/}"
+  [ "${got,,}" = "${want,,}" ] ||
     die "live board is '$live' ($src) but this run is configured for '$BOARD_TAG' -
        point BOARD_ENV= and BACKUP= at that board's files instead"
   # A partition backup is per-unit, not per-model: prove this tree's boot image carries the tag.
@@ -192,11 +250,13 @@ require_backup() {
   [ -s "$BACKUP/$1" ] || die "missing $BACKUP/$1 - run scripts/20-backup.sh first"
 }
 
-# dev_avail_mb - free space on the stick's rootfs, in MiB. df -BG prints *GiB* (and rounds
-# up), which is what made a 2.2G-free stick look like "3 MB free" to the first version of
-# this check, so ask for an explicit block size instead of guessing at the unit suffix.
+# dev_avail_mb - free space on the stick's rootfs, in MiB.
+# `df -Pk` and not `df --block-size=1M`: busybox df (Alpine) rejects --block-size, so the
+# long form only worked while the stick was still on Debian's GNU coreutils. -P and -k are
+# supported by both. df -BG is also wrong - it prints *GiB* and rounds up, which is what made
+# a 2.2G-free stick look like "3 MB free" to the first version of this check.
 dev_avail_mb() {
-  dev "df -P --block-size=1M / | awk 'NR==2{print \$4}'" | tr -dc '0-9'
+  dev "df -Pk / | awk 'NR==2{print int(\$4/1024)}'" | tr -dc '0-9'
 }
 
 # detect_gadget_if - set HOST_GADGET_IF/HOST_GADGET_IP from the live host, not from the env

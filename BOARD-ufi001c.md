@@ -4,6 +4,13 @@ Everything here was **measured on this unit on 2026-11-05**, not copied from a v
 from the notes for the other stick in this probe. Where a claim corrects something this repo
 already said, the correction is called out explicitly.
 
+> **This is one of two supported targets.** The other unit — *UFI103s*, `backup-ufi103s/`,
+> `config/board-ufi103s.env` — has its own board file in
+> [`BOARD-ufi103s.md`](BOARD-ufi103s.md), and differs in the ways that break flashes: its own
+> stock DTB, an *empty* `version-special` on the factory aboot, a button that enters **EDL**
+> rather than fastboot, and a rootfs built offline in a container because its Wi-Fi will not
+> associate. Do not carry measurements from this file across.
+
 > **Per-unit identifiers are redacted.** `<serial-001c>` / `<serial-103s>` stand in for each
 > board's eMMC serial (readable as `/proc/device-tree/serial-number`, and as
 > `androidboot.serialno=` on the vendor kernel), and `<redacted>` for the modem IMEI. Substitute
@@ -480,3 +487,11 @@ Order matters; every step here is one that was skipped or done out of order on t
   *suffix*: `pkg@pmos`); a multi-line variable passed to `sh -c` runs its second line as a command;
   `[ -f x ] && cmd` as the last statement of a `set -e` script is fatal when the test fails; and
   `pkill -f "http.server 8000"` matched the shell running it.
+* Clock + TLS: this board has no RTC battery, and the converted Alpine image has nothing that
+  syncs time before `apk` runs — so a cold-booted stick sits at 1970 and apk rejects the
+  postmarketos mirror with "TLS: server certificate not trusted" (every certificate is "not yet
+  valid"). The vendor system set the clock itself, which is why the same build worked on the
+  Debian board. `54` now stamps the host's UTC onto the stick before the on-stick build and
+  refuses to proceed if that fails.
+* `mirrors.ustc.edu.cn` answers **403 to GNU wget's User-Agent** but 200 to `curl` and apk's own
+  fetcher. Probing the pmos repo with `wget` from the stick looks like an outage; it is not.
