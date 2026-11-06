@@ -180,10 +180,10 @@ do not own. `adb exec-out` is answered with `error: closed` by this daemon — `
 | `adb shell` as root over the gadget | ✓ | ✓ | `adb -s <serial> shell id` → `uid=0(root)`. The vendor `adbd` (glibc) runs on musl through `gcompat`. |
 | USB serial console, no disassembly | ✓ | ✓ | host sees `/dev/ttyACM0`; `ttyGS0::respawn:/bin/sh` in `/etc/inittab` gives a passwordless root shell — the door that survives both a broken gadget network and a broken network config. |
 | ssh over the NCM link | ✓ (was broken) | **not default** | Port 22 was never listening on either unit (notes above). Opt in with the two commands below. |
-| Wi-Fi station | ✓ (was broken) | service on, no saved network | `nmcli device wifi list` returns real SSIDs with signal after this build. Credentials are per-device and never baked into a released image. |
+| Wi-Fi station | ✓ joined and holding a default route on both boards (was broken) | service on, no saved network | `nmcli device wifi list` returns real SSIDs with signal after this build. Credentials are per-device and never baked into a released image. |
 | Wi-Fi hotspot AP (`Openstick`, 192.168.4.1) | ✓ | not default | `hotspot.nmconnection` ships with `autoconnect=false` so the stick joins your network instead of broadcasting one. |
 | LTE modem (QMI `wwan0`) | ✓ probed, `sim-missing` | ✓ | MBA + MPSS load, `remoteproc1 … is now up`, ModemManager enumerates a `gsm` device with LTE bands. Registration on a live network is **not** verified — no SIM in this unit. |
-| Shares its uplink with the host | ✓ NAT + forwarding verified on both boards; **DNS was broken and is fixed after the fact** — see the two bugs below. Client-side transit still needs a retest on the laptop | ✓ | Whoever holds the default route gets MASQUERADE + FORWARD + `ip_forward=1`, and dnsmasq answers DNS with that uplink's resolvers. No uplink → forwarding stays off. Inspect with `nat-share.sh status`, and then actually resolve something through it — see below. **Two bugs found here, both silent:** the first version took field 3 of `ip -4 route show default`, which is the *gateway*, so the rule went in as `-o 192.168.24.1` — iptables accepts it, it matches nothing, and NAT silently never happens. 1. *NAT keyed on the gateway.* The first version took field 3 of `ip -4 route show default`, which is the
+| Shares its uplink with the host | ✓ **verified end to end on the released image** (UFI001C, 2026-11-06): control 0 pkts / bound 2 pkts / resolve-only-via-stick 3 pkts. DNS was broken first and is fixed — see the two bugs below | ✓ | Whoever holds the default route gets MASQUERADE + FORWARD + `ip_forward=1`, and dnsmasq answers DNS with that uplink's resolvers. No uplink → forwarding stays off. Inspect with `nat-share.sh status`, and then actually resolve something through it — see below. **Two bugs found here, both silent:** the first version took field 3 of `ip -4 route show default`, which is the *gateway*, so the rule went in as `-o 192.168.24.1` — iptables accepts it, it matches nothing, and NAT silently never happens. 1. *NAT keyed on the gateway.* The first version took field 3 of `ip -4 route show default`, which is the
    gateway, so the rule went in as `-o 192.168.24.1`. iptables accepts a bogus interface name, installs the
    rule, and matches nothing. Now it parses the word after `dev`, with a regression test that stubs
    `ip`/`iptables` and asserts the rule names `wlan0`.
@@ -264,6 +264,36 @@ scripts/78-flash-over-edl.sh reboot            # see the caveat below
   serial), so the interface name identifies nothing. The eMMC serial is the only discriminator.
 * Nothing here writes `sbl1`/`rpm`/`tz` or any calibration partition (`modemst1/2`, `fsg`,
   `fsc`, `sec`, `cdt`, `devinfo`).
+
+## Proving the share works, not just that it is configured
+
+Every failure in this project's history that cost time was a write or a feature that reported
+success while doing nothing. These four checks are the ones that actually discriminate, run from
+the laptop with the stick attached:
+
+```sh
+# 1. the stick's resolver answers a real name - "port 53 is open" does NOT prove this.
+#    Before the fix this returned REFUSED while every other signal looked healthy.
+nslookup example.com 192.168.5.1
+
+# 2. control: normal traffic must NOT cross the stick (host has its own default route).
+adb -s <serial> shell 'iptables -t nat -Z POSTROUTING'
+curl -m 10 -sS -o /dev/null -w '%{http_code}\n' https://example.com
+adb -s <serial> shell 'iptables -t nat -L POSTROUTING -v -n | grep MASQUERADE'   # 0 pkts
+
+# 3. test: bind to the stick, and the counter must move. 200 with 0 pkts would mean the
+#    answer came from the laptop's own uplink, which is exactly what step 2 rules out.
+curl --interface enx<mac> -m 15 -sS -o /dev/null -w '%{http_code}\n' https://example.com
+adb -s <serial> shell 'iptables -t nat -L POSTROUTING -v -n | grep MASQUERADE'   # >0 pkts
+
+# 4. transit end to end: resolve ONLY through the stick, then connect to that address.
+IP=$(nslookup example.com 192.168.5.1 | awk '/^Address: /{print $2; exit}')
+curl --interface enx<mac> --resolve example.com:443:$IP -sS -o /dev/null -w '%{http_code} via %{remote_ip}\n' https://example.com/
+```
+
+Measured on the UFI001C on 2026-11-06, in this order: control HTTP 200 / **0 pkts**; bound HTTP
+200 / **2 pkts**; step 4 HTTP 200 via `172.66.147.243` / **3 pkts**. Without step 2, step 3's
+`200` would have proved nothing.
 
 ## Quickstart
 

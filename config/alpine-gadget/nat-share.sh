@@ -115,7 +115,9 @@ case "${1:-apply}" in
     echo "  uplink (default route): ${up:-none}"
     echo "  gadget iface:         ${gi:-none}"
     echo "  ip_forward:           $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)"
-    printf '  upstream DNS:\n'; sed 's/^/    /' "$DNS_FILE" 2>/dev/null || echo "    (none yet)"
+    # The file holds `nameserver <ip>` lines (it has to - dnsmasq parses it), so show the
+    # addresses, not the keyword, or the operator reads "nameserver" twice and wonders.
+    printf '  upstream DNS:\n'; sed 's/^nameserver /    /' "$DNS_FILE" 2>/dev/null || echo "    (none yet)"
     printf '  nat POSTROUTING:\n'; iptables -t nat -S POSTROUTING 2>/dev/null | sed 's/^/    /' || true
     printf '  recent events:\n'; tail -8 "$LOG" 2>/dev/null | sed 's/^/    /' || true
     ;;
