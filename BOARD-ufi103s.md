@@ -58,6 +58,21 @@ QMI level, while MBA+MPSS load and ModemManager sees a `gsm` device), either SIM
 the stock `handsome` DTB boots under mainline at all, and the rootfs expansion in §8.
 
 
+**Consequence of a bug found later, specific to this unit:** the v0.1 rootfs flashed here on
+2026-11-06 contains `nat-share.sh` before its uplink parsing was fixed, so if this board ever
+becomes the one with an uplink, its NAT rule would read `-o 192.168.24.1` (a gateway, not an
+interface) — accepted by iptables, matching nothing, sharing silently absent. Either reflash the
+rootfs from the regenerated pack or push the corrected file:
+
+```sh
+adb -s <serial-103s> push config/alpine-gadget/nat-share.sh /usr/local/bin/nat-share.sh
+adb -s <serial-103s> shell 'chmod 755 /usr/local/bin/nat-share.sh; /usr/local/bin/nat-share.sh status'
+```
+
+The UFI001C was reflashed with the fixed build and verified: after a reboot with forwarding off
+and no rules, the image reconnected Wi-Fi, set `ip_forward=1`, installed
+`-o wlan0` MASQUERADE and made dnsmasq answer DNS on its own.
+
 ## 2. The download doors, measured here
 
 **fastboot — works, and is reachable from a running system.** `adb reboot bootloader` →

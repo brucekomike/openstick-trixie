@@ -210,9 +210,10 @@ if [ -z "$ONLY" ] || [ "$ONLY" = rootfs ]; then
     # stock boot.img is what rung 1 assumes - but a board whose `boot` partition was already
     # replaced (this repo did exactly that) answers with the *new* kernel here, and the old
     # wording asserted a fact this script never checked.
-    echo "  ok: a Linux userspace came up on the current boot partition. If `boot` is still"
-    echo "      factory, that is the vendor 5.15 kernel and restore/boot-stock.bin still"
-    echo "      reverses it; check from the stick with: adb shell uname -r"
+    echo "  ok: a Linux userspace came up on the current boot partition. If the boot"
+    echo "      partition is still factory, that is the vendor 5.15 kernel, and"
+    echo "      restore/boot-stock.bin still reverses it. Check from the stick:"
+    echo "      adb shell uname -r"
   else
     rc=$?
     die "rung 1 did not come up (rc=$rc). Stop here: the bootloader is still factory, so
